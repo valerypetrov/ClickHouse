@@ -1,5 +1,6 @@
--- A predicate on the preprocessor expression of a text index, e.g. `hasToken(lower(s), 'x')` for `preprocessor = lower(s)`,
--- uses the index like an index without a preprocessor built on that expression: the needle is not preprocessed again.
+-- Tags: no-fasttest
+-- no-fasttest: `lowerUTF8` needs ICU.
+-- `hasToken(lower(s), 'x')` must use a text index with `preprocessor = lower(s)`, without lowering 'x' again.
 
 SET explain_query_plan_default = 'legacy';
 
