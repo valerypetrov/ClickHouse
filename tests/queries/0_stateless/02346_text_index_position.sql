@@ -256,6 +256,15 @@ SELECT 'not not position = 0', arraySort(groupArray(id)) FROM tab WHERE NOT (NOT
 SELECT 'not not position = 0', arraySort(groupArray(id)) FROM tab WHERE NOT (NOT (position(message, 'lpha') = 0)) SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 0;
 SELECT 'not not position = 0', arraySort(groupArray(id)) FROM tab WHERE NOT (NOT (position(message, 'lpha') = 0)) SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 1;
 
+-- The same check used twice: the NULL row must not turn into 0.
+SELECT 'or not', arraySort(groupArray(id)) FROM tab WHERE position(message, 'lpha') > 0 OR NOT (position(message, 'lpha') > 0) SETTINGS use_skip_indexes = 0;
+SELECT 'or not', arraySort(groupArray(id)) FROM tab WHERE position(message, 'lpha') > 0 OR NOT (position(message, 'lpha') > 0) SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 0;
+SELECT 'or not', arraySort(groupArray(id)) FROM tab WHERE position(message, 'lpha') > 0 OR NOT (position(message, 'lpha') > 0) SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 1;
+
+SELECT 'select', arraySort(groupArray((id, position(message, 'lpha') > 0))) FROM tab WHERE position(message, 'lpha') > 0 OR id = 2 SETTINGS use_skip_indexes = 0;
+SELECT 'select', arraySort(groupArray((id, position(message, 'lpha') > 0))) FROM tab WHERE position(message, 'lpha') > 0 OR id = 2 SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 0;
+SELECT 'select', arraySort(groupArray((id, position(message, 'lpha') > 0))) FROM tab WHERE position(message, 'lpha') > 0 OR id = 2 SETTINGS use_skip_indexes = 1, query_plan_direct_read_from_text_index = 1;
+
 DROP TABLE tab;
 
 SELECT '-- Array tokenizer: the needle is matched literally inside the whole value';

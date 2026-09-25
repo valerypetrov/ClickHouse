@@ -1863,6 +1863,11 @@ bool MergeTreeIndexConditionText::traverseSubstringOccurrenceNode(const RPNBuild
         || !UTF8::isValidUTF8(reinterpret_cast<const UInt8 *>(needle_string.data()), needle_string.size()))
         return false;
 
+    /// A UInt8 virtual column cannot carry the NULL of a Nullable haystack.
+    const auto * haystack_node = search_function.getArgumentAt(0).getDAGNode();
+    if (!haystack_node || isNullableOrLowCardinalityNullable(haystack_node->result_type))
+        return false;
+
     Field pattern("%" + escapeForLikePattern(needle_string) + "%");
     return traverseFunctionNode(
         like_function_name, search_function.getArgumentAt(0), std::make_shared<DataTypeString>(), std::move(pattern), out);
