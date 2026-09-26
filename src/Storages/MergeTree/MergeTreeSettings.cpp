@@ -548,13 +548,15 @@ it and can still consume the protected space, and the setting has no effect on
 disks with unlimited space (such as object storage).
 
 Merges initiated by [OPTIMIZE](/reference/statements/optimize) with `FINAL` or
-with an explicit `PARTITION` ignore this setting. Merges that only drop wholly
-expired parts are not limited by their source size: they write an empty part
-and reserve only the 1 MiB minimum every reservation is clamped to, so they are
-selected whenever the limit is above zero. TTL merges that rewrite data
-(`TTL ... DELETE`, recompression) are not exempt and are postponed while the
-headroom binds. At a limit of zero nothing is selected,
-expired-part drops included.
+with an explicit `PARTITION` ignore this setting. Merges that drop wholly
+expired parts are selected whenever the limit is above zero, whatever their
+size, and nothing is selected at zero. Every merge reserves at least 1 MiB, so
+a merge started with less than 1 MiB left above the protected space can take up
+to 1 MiB of it. A `ReplicatedMergeTree` replica also runs queued drops when its
+own limit is zero, if a row TTL without `WHERE` is the table's only TTL. With a
+`GROUP BY`, `WHERE` or column TTL such a drop rewrites the remaining rows:
+`ReplicatedMergeTree` postpones it by the size of its parts, but `MergeTree`
+does not and can write them into the protected space.
 
 Once the limit is zero a plain `OPTIMIZE` assigns nothing: it is a no-op, or
 throws `CANNOT_ASSIGN_OPTIMIZE` with `optimize_throw_if_noop = 1`. Use `FINAL`
