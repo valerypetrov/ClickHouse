@@ -112,26 +112,25 @@ $CLICKHOUSE_CLIENT -q "
     ATTACH TABLE url_${NC_PUT}"
 $CLICKHOUSE_CLIENT -q "SELECT * FROM url_${NC_PUT}" 2>&1 | grep -o -m1 "cannot be combined with http_method='PUT'"
 $CLICKHOUSE_CLIENT -q "DROP TABLE url_${NC_PUT}; DROP NAMED COLLECTION ${NC_PUT}"
-# http_method is silently ignored for non-HTTP scheme dispatch (the delegate backend
-# never sees it); the error, if any, comes from the delegate, not from an http_method guard.
+# Non-HTTP scheme dispatch ignores a named collection's http_method, as before, but rejects
+# the inline argument, which is new syntax, like headers(...).
 $CLICKHOUSE_CLIENT -q "
     DROP NAMED COLLECTION IF EXISTS ${NC_DISP};
     CREATE NAMED COLLECTION ${NC_DISP} AS url = 'file:///nonexistent_62352.csv', format = 'CSV', structure = 'x String', http_method = 'PUT'"
 $CLICKHOUSE_CLIENT -q "SELECT * FROM url(${NC_DISP})" 2>&1 | grep -c 'does not support http_method'
-$CLICKHOUSE_CLIENT -q "SELECT * FROM url('file:///nonexistent_62352.csv', 'CSV', 'x String', http_method='POST')" 2>&1 | grep -c 'does not support http_method'
-# A query-time override is ignored the same way for non-HTTP schemes.
+$CLICKHOUSE_CLIENT -q "SELECT * FROM url('file:///nonexistent_62352.csv', 'CSV', 'x String', http_method='POST')" 2>&1 | grep -o -m1 'does not support http_method'
+# A query-time override of the collection is ignored the same way.
 $CLICKHOUSE_CLIENT -q "SELECT * FROM url(${NC_DISP}, http_method='POST')" 2>&1 | grep -c 'does not support http_method'
 $CLICKHOUSE_CLIENT -q "SELECT * FROM url(${NC_DISP}, method='POST')" 2>&1 | grep -c 'does not support http_method'
 $CLICKHOUSE_CLIENT -q "DROP NAMED COLLECTION ${NC_DISP}"
-# The engine mirrors this: a CREATE over a collection with http_method delegates to the
-# scheme backend with the key ignored.
+# The engine mirrors this: a CREATE over a collection with http_method delegates with the key ignored.
 $CLICKHOUSE_CLIENT -q "
     DROP NAMED COLLECTION IF EXISTS ${NC_ENGINE};
     CREATE NAMED COLLECTION ${NC_ENGINE} AS url = 'file:///nonexistent_62352.csv', format = 'CSV', http_method = 'PUT'"
 $CLICKHOUSE_CLIENT -q "CREATE TABLE url_nc_file_62352 (x String) ENGINE = URL(${NC_ENGINE})" 2>&1 | grep -c 'does not support http_method'
 $CLICKHOUSE_CLIENT -q "DROP TABLE IF EXISTS url_nc_file_62352; DROP NAMED COLLECTION ${NC_ENGINE}"
-# A full-definition ATTACH with inline http_method also delegates with the key ignored.
-$CLICKHOUSE_CLIENT -q "ATTACH TABLE url_attach_full_62352 UUID '${UUID_ATTACH}' (x String) ENGINE = URL('file:///nonexistent_62352.csv', CSV, http_method='POST')" 2>&1 | grep -o -m1 'DATABASE_ACCESS_DENIED'
+# The inline argument is rejected by the engine too, here on a full-definition ATTACH.
+$CLICKHOUSE_CLIENT -q "ATTACH TABLE url_attach_full_62352 UUID '${UUID_ATTACH}' (x String) ENGINE = URL('file:///nonexistent_62352.csv', CSV, http_method='POST')" 2>&1 | grep -o -m1 'does not support http_method'
 $CLICKHOUSE_CLIENT -q "DROP TABLE IF EXISTS url_attach_full_62352"
 $CLICKHOUSE_CLIENT -q "ATTACH TABLE url_attach_wild_62352 UUID '${UUID_WILD}' (x String) ENGINE = URL('http://localhost:1/files/*.csv', CSV)" 2>&1 | grep -o -m1 'SUPPORT_IS_DISABLED'
 # The delegated engine's TABLE_ENGINE privilege is enforced for full-definition ATTACH too:

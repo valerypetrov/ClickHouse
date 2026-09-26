@@ -16,11 +16,11 @@ SUPPORT_IS_DISABLED
 BAD_ARGUMENTS
 cannot be combined with http_method='PUT'
 0
+does not support http_method
 0
 0
 0
-0
-DATABASE_ACCESS_DENIED
+does not support http_method
 SUPPORT_IS_DISABLED
 ACCESS_DENIED
 6

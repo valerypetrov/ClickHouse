@@ -2340,6 +2340,7 @@ StorageURL::Configuration StorageURL::getConfiguration(ASTs & args, const Contex
     else
     {
         size_t count = evalArgsAndCollectHeaders(args, configuration.headers, local_context, /*evaluate_arguments=*/ true, &configuration.http_method);
+        configuration.inline_http_method = !configuration.http_method.empty();
 
         if (count == 0 || count > 3)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, bad_arguments_error_message);
@@ -2579,6 +2580,12 @@ static StoragePtr tryDispatchURLEngineByScheme(const StorageFactory::Arguments &
         throw Exception(
             ErrorCodes::BAD_ARGUMENTS,
             "The URL engine does not support headers(...) when dispatching to the {} engine (URL '{}')",
+            engine_name, configuration.url);
+
+    if (configuration.inline_http_method)
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS,
+            "The URL engine does not support http_method when dispatching to the {} engine (URL '{}')",
             engine_name, configuration.url);
 
     const String & format = configuration.format;

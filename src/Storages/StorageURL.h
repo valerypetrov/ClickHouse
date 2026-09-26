@@ -394,6 +394,8 @@ public:
     {
         std::string url;
         std::string http_method;
+        /// Set by the inline `http_method = '...'` argument, not by a named collection.
+        bool inline_http_method = false;
         HTTPHeaderEntries headers;
         std::string addresses_expr;
     };

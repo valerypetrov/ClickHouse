@@ -167,6 +167,7 @@ void TableFunctionURL::parseArgumentsImpl(ASTs & args, const ContextPtr & contex
     {
         size_t count = StorageURL::evalArgsAndCollectHeaders(
             args, configuration.headers, context, /*evaluate_arguments=*/ true, &configuration.http_method);
+        configuration.inline_http_method = !configuration.http_method.empty();
 
         ASTs key_value_args(args.begin() + count, args.end());
         args.resize(count);
@@ -200,6 +201,12 @@ void TableFunctionURL::parseArgumentsImpl(ASTs & args, const ContextPtr & contex
             throw Exception(
                 ErrorCodes::BAD_ARGUMENTS,
                 "The url table function does not support headers(...) when dispatching to the {} engine (URL '{}')",
+                storageEngineNameForURLScheme(target), filename);
+
+        if (configuration.inline_http_method)
+            throw Exception(
+                ErrorCodes::BAD_ARGUMENTS,
+                "The url table function does not support http_method when dispatching to the {} engine (URL '{}')",
                 storageEngineNameForURLScheme(target), filename);
 
         buildDelegate(target, context);
