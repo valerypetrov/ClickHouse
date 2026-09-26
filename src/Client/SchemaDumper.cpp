@@ -1675,8 +1675,6 @@ std::vector<TableInfo> resolveTables(
         }
         catch (const Exception & e)
         {
-            if (use_database_create)
-                continue;
             throw Exception(
                 ErrorCodes::NOT_IMPLEMENTED,
                 "Cannot parse the stored CREATE for external proxy {}.{} to resolve its local source for --dump-schema: {}",
@@ -2214,13 +2212,28 @@ std::optional<std::vector<String>> orderDatabasesByDependencies(const std::vecto
     for (const auto & db : target_databases)
         depends_on[db]; /// every database gets an entry, even with no dependencies
 
+    /// A proxy row is not emitted, so its readers must also wait for the source it reads.
+    std::map<std::pair<String, String>, const TableInfo *> proxy_rows;
+    for (const auto & table : tables)
+        if (!table.emit)
+            proxy_rows.emplace(std::pair(table.database, table.name), &table);
+
     for (const auto & table : tables)
     {
         if (!table.emit)
             continue;
+        auto add_dependency = [&](const String & database)
+        {
+            if (database != table.database && db_set.contains(database))
+                depends_on[table.database].insert(database);
+        };
         for (const auto & dependency : table.dependencies)
-            if (dependency.first != table.database && db_set.contains(dependency.first))
-                depends_on[table.database].insert(dependency.first);
+        {
+            add_dependency(dependency.first);
+            if (auto it = proxy_rows.find(dependency); it != proxy_rows.end())
+                for (const auto & source : it->second->dependencies)
+                    add_dependency(source.first);
+        }
     }
 
     std::map<String, size_t> remaining_dependencies;
@@ -2270,6 +2283,7 @@ struct ReplayGateNeeds
     bool time_series_table = false;
     bool kafka_engine = false;
     bool nullable_tuple_type = false;
+    bool unique_key = false;
 };
 
 ReplayGateNeeds collectReplayGateNeeds(const std::vector<String> & create_queries)
@@ -2290,7 +2304,7 @@ ReplayGateNeeds collectReplayGateNeeds(const std::vector<String> & create_querie
                     .analyzable_query_text = true, .ordinary_database = true, .replicated_database = true,
                     .materialized_postgresql_database = true, .materialized_mysql_database = true,
                     .materialized_postgresql_table = true, .time_series_table = true,
-                    .kafka_engine = true, .nullable_tuple_type = true};
+                    .kafka_engine = true, .nullable_tuple_type = true, .unique_key = true};
         }
 
         const auto * create = create_ast->as<ASTCreateQuery>();
@@ -2343,6 +2357,14 @@ ReplayGateNeeds collectReplayGateNeeds(const std::vector<String> & create_querie
                     needs.kafka_engine = true;
             }
         }
+
+        /// `enable_unique_key` is checked only for a UNIQUE KEY; a view or TimeSeries keeps its engines in `targets`.
+        if (create->storage && create->storage->unique_key)
+            needs.unique_key = true;
+        if (create->targets)
+            for (const auto * inner_engine : create->targets->getInnerEngines())
+                if (inner_engine->unique_key)
+                    needs.unique_key = true;
 
         /// `enable_nullable_tuple_type` gates `Nullable(Tuple(...))` column types.
         if (create->columns_list && create->columns_list->columns)
@@ -2409,7 +2431,7 @@ String replaySettingsPrelude(const std::set<String> & settings_known_to_server, 
     };
 
     String res;
-    /// Shared gates stay conservative except analyzer-only and dead settings proven absent.
+    /// Shared gates stay conservative except analyzer-only, UNIQUE KEY and dead settings proven absent.
     static const std::set<std::string_view> dead_settings = {
         "allow_experimental_window_functions",
         "allow_experimental_hash_functions",
@@ -2422,7 +2444,8 @@ String replaySettingsPrelude(const std::set<String> & settings_known_to_server, 
     };
     for (const auto & name : allExperimentalSettingNames())
         if (settings_known_to_server.contains(name) && !dead_settings.contains(name)
-            && (!analyzer_settings.contains(name) || needs.analyzable_query_text))
+            && (!analyzer_settings.contains(name) || needs.analyzable_query_text)
+            && (name != "allow_experimental_unique_key" || needs.unique_key))
             res += "SET " + name + " = 1;\n";
     /// Emit dump-specific gates only when the dumped AST proves they are needed.
     for (const auto & [name, value] : dump_specific)

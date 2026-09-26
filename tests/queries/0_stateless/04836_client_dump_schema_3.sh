@@ -279,7 +279,7 @@ echo "projection schema, analyzer gate emitted: $(grep -c 'SET allow_suspicious_
 echo "projection schema, dead gates emitted: $(grep -cE 'SET (allow_experimental_window_functions|allow_experimental_hash_functions|allow_simdjson) = ' "$PROJ_DUMP_FILE")"
 rm -rf "$PROJ_PATH" "$PROJ_DUMP_FILE"
 
-echo '--- a plain dump replays under an unrelated analyzer constraint ---'
+echo '--- a plain dump replays under unrelated analyzer and UNIQUE KEY constraints ---'
 CONSTRAINT_DB="${DB}_constraint"
 CONSTRAINT_USER="${DB}_constraint_user"
 CONSTRAINT_PROFILE="${DB}_constraint_profile"
@@ -295,7 +295,7 @@ $CLICKHOUSE_CLIENT --multiquery --query "
     DROP DATABASE IF EXISTS ${CONSTRAINT_DB};
     DROP USER IF EXISTS ${CONSTRAINT_USER};
     DROP SETTINGS PROFILE IF EXISTS ${CONSTRAINT_PROFILE};
-    CREATE SETTINGS PROFILE ${CONSTRAINT_PROFILE} SETTINGS allow_suspicious_types_in_group_by = 0 CONST;
+    CREATE SETTINGS PROFILE ${CONSTRAINT_PROFILE} SETTINGS allow_suspicious_types_in_group_by = 0 CONST, enable_unique_key = 0 CONST;
     CREATE USER ${CONSTRAINT_USER} SETTINGS PROFILE '${CONSTRAINT_PROFILE}';
     GRANT CREATE DATABASE, CREATE TABLE ON *.* TO ${CONSTRAINT_USER};
     GRANT TABLE ENGINE ON * TO ${CONSTRAINT_USER};
@@ -321,7 +321,7 @@ CREATE DATABASE ${DB};
 CREATE TABLE ${DB}.plain (x Int64) ENGINE = MergeTree ORDER BY tuple();
 "
 $CLICKHOUSE_LOCAL --path "$SHARED_PATH" --dump-schema="${DB}" > "$SHARED_DUMP_FILE" 2>"$ERR_FILE"
-# A stored-DDL gate from the shared list — always emitted.
+# Only a UNIQUE KEY reaches this gate, so a plain table does not get it.
 echo "unique-key gate present: $(grep -c 'SET allow_experimental_unique_key = 1;' "$SHARED_DUMP_FILE")"
 # A suspicious-type gate from the shared list — always emitted.
 echo "suspicious-primary-key gate present: $(grep -c 'SET allow_suspicious_primary_key = 1;' "$SHARED_DUMP_FILE")"
@@ -330,6 +330,21 @@ echo "fuzz-functions gate present: $(grep -c 'SET allow_fuzz_query_functions = 1
 # A deprecated-syntax gate from the shared list — always emitted.
 echo "deprecated-mt-syntax gate present: $(grep -c 'SET allow_deprecated_syntax_for_merge_tree = 1;' "$SHARED_DUMP_FILE")"
 rm -rf "$SHARED_PATH" "$SHARED_DUMP_FILE"
+
+echo '--- a UNIQUE KEY in a materialized view engine keeps its gate ---'
+# The view keeps its engine under `targets`, not `storage`.
+UK_PATH="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_uk"
+UK_DUMP_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_uk.sql"
+rm -rf "$UK_PATH"
+$CLICKHOUSE_LOCAL --path "$UK_PATH" --multiquery --query "
+CREATE DATABASE ${DB};
+CREATE TABLE ${DB}.src (k UInt64) ENGINE = MergeTree ORDER BY k;
+SET enable_unique_key = 1;
+CREATE MATERIALIZED VIEW ${DB}.mv ENGINE = MergeTree ORDER BY k UNIQUE KEY k AS SELECT k FROM ${DB}.src;
+"
+$CLICKHOUSE_LOCAL --path "$UK_PATH" --dump-schema="${DB}" > "$UK_DUMP_FILE" 2>"$ERR_FILE"
+echo "mv unique-key gate present: $(grep -c 'SET allow_experimental_unique_key = 1;' "$UK_DUMP_FILE")"
+rm -rf "$UK_PATH" "$UK_DUMP_FILE"
 
 echo '--- a dump with a MATERIALIZED expression replays through the prelude ---'
 # A MATERIALIZED expression re-validates function gates at replay; the prelude carries them.
@@ -543,10 +558,11 @@ if $CLICKHOUSE_CLIENT --show_remote_databases_in_system_tables=0 --dump-schema="
     REMOTE_LINE=$(grep -n "Dumped database ${REMOTE_DB} schema" "$REMOTE_DIR_OUTPUT" | cut -d: -f1)
     SECURE_LINE=$(grep -n "Dumped database ${REMOTE_SECURE_DB} schema" "$REMOTE_DIR_OUTPUT" | cut -d: -f1)
     READER_LINE=$(grep -n "Dumped database ${REMOTE_READER_DB} schema" "$REMOTE_DIR_OUTPUT" | cut -d: -f1)
-    if [ "$REMOTE_LINE" -lt "$READER_LINE" ] && [ "$SECURE_LINE" -lt "$READER_LINE" ]; then
-        echo 'OK: directory dump orders proxies before readers'
+    SOURCE_LINE=$(grep -n "Dumped database ${REMOTE_SOURCE_DB} schema" "$REMOTE_DIR_OUTPUT" | cut -d: -f1)
+    if [ "$REMOTE_LINE" -lt "$READER_LINE" ] && [ "$SECURE_LINE" -lt "$READER_LINE" ] && [ "$SOURCE_LINE" -lt "$READER_LINE" ]; then
+        echo 'OK: directory dump orders proxies and their source before readers'
     else
-        echo "FAIL: directory order remote=$REMOTE_LINE secure=$SECURE_LINE reader=$READER_LINE"
+        echo "FAIL: directory order remote=$REMOTE_LINE secure=$SECURE_LINE source=$SOURCE_LINE reader=$READER_LINE"
     fi
 else
     echo "FAIL: remote database directory dump rejected: $(cat "$ERR_FILE")"
