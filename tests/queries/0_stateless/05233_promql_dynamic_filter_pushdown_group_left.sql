@@ -17,7 +17,7 @@ INSERT INTO t_promql_dfp (metric_name, tags, samples) VALUES
     ('target_info', map('dc', 'b', 'env', 'staging_dup'), [(toDateTime64(100, 3), 1), (toDateTime64(110, 3), 1)]),
     ('target_info', map('dc', 'c', 'env', 'dev'), [(toDateTime64(100, 3), 1), (toDateTime64(110, 3), 1)]);
 
-SELECT '-- group_left with dynamic filter pushdown pruning dc=b and dc=c';
+SELECT '-- group_left prunes dc=b and dc=c, so the duplicate dc=b series is not reported';
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left (env) target_info', 110) ORDER BY tags;
 
 SELECT '-- group_left with empty left side';
@@ -64,5 +64,11 @@ SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left abs
 
 SELECT '-- group_left with absent returning empty';
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left absent(target_info{dc="a"})', 110) ORDER BY tags;
+
+SELECT '-- a duplicate on a matched join group is still reported';
+INSERT INTO t_promql_dfp (metric_name, tags, samples) VALUES
+    ('target_info', map('dc', 'a', 'env', 'prod_dup'), [(toDateTime64(100, 3), 1), (toDateTime64(110, 3), 1)]);
+SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left (env) target_info', 110); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }
+SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left (env) (target_info offset 10s)', 110); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }
 
 DROP TABLE t_promql_dfp;

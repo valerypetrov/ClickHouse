@@ -295,7 +295,7 @@ namespace
                     make_intrusive<ASTLiteral>(0u));
             }
 
-            /// Filter right-side join_groups by left side in Step 2.
+            /// Filter by the left side's join groups, so duplicates are reported only for groups that can match.
             right_builder.where = filter_condition;
 
             ASTPtr right_ast = right_builder.getSelectQuery();
