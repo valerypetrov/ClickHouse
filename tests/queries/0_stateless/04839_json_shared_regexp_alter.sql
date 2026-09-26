@@ -108,3 +108,20 @@ SELECT
 FROM alter_04839;
 
 DROP TABLE alter_04839;
+
+-- A CAST between types that differ only in SHARED REGEXP keeps value types and applies the new rules.
+CREATE TABLE cast_04839 (t Tuple(j JSON)) ENGINE = MergeTree ORDER BY tuple();
+INSERT INTO cast_04839 SETTINGS input_format_try_infer_dates = 0, input_format_try_infer_datetimes = 0 VALUES (tuple('{"d":"2020-01-01","k":"2020-01-02"}'));
+SELECT 'cast', dynamicType(c.d), dynamicType(c.k), JSONDynamicPaths(c), JSONSharedDataPaths(c) FROM (SELECT CAST(t.j, 'JSON(SHARED REGEXP \'^d$\')') AS c FROM cast_04839);
+ALTER TABLE cast_04839 MODIFY COLUMN t Tuple(j JSON(SHARED REGEXP '^d$')) SETTINGS mutations_sync = 2;
+SELECT 'tuple alter', dynamicType(t.j.d), dynamicType(t.j.k), JSONDynamicPaths(t.j), JSONSharedDataPaths(t.j) FROM cast_04839;
+DROP TABLE cast_04839;
+
+-- A rules-only ALTER keeps skip indexes of old parts; a timezone change in the same ALTER does not.
+CREATE TABLE index_04839 (id UInt64, j JSON(a DateTime('UTC')), INDEX paths JSONAllPaths(j) TYPE bloom_filter GRANULARITY 1, INDEX text toString(j) TYPE bloom_filter GRANULARITY 1) ENGINE = MergeTree ORDER BY id SETTINGS index_granularity = 1;
+INSERT INTO index_04839 SELECT number, if(number = 7, '{"needle":1}', toJSONString(map('a', toString(toDateTime('2020-01-01 00:00:00', 'UTC') + number * 3600)))) FROM numbers(24);
+ALTER TABLE index_04839 MODIFY COLUMN j JSON(a DateTime('UTC'), SHARED REGEXP '^zzz$');
+SELECT 'rules-only alter', trimLeft(explain) FROM (EXPLAIN indexes = 1 SELECT count() FROM index_04839 WHERE has(JSONAllPaths(j), 'needle')) WHERE explain LIKE '%Granules%';
+ALTER TABLE index_04839 MODIFY COLUMN j JSON(a DateTime('Asia/Tokyo'), SHARED REGEXP '^yyy$');
+SELECT 'rules and timezone alter', id FROM index_04839 WHERE toString(j) = '{"a":"2020-01-01 09:00:00"}';
+DROP TABLE index_04839;
