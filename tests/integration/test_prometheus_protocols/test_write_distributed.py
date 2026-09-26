@@ -152,6 +152,10 @@ def start_cluster():
             "CREATE TABLE prom_column_granted_bad AS prom_column_granted "
             "ENGINE = Distributed(two_shards_column_granted, '', mt_bad, cityHash64(tags['host']))"
         )
+        node.query(
+            "CREATE TABLE prom_column_granted_replicated AS prom_column_granted "
+            "ENGINE = Distributed(one_shard_column_granted_replicated, '', ts_column_granted)"
+        )
 
         # Wrappers retyped away from the outer schema a TimeSeries table generates for itself, over
         # shard tables of their own, so the exact counts of the other tests are untouched.
@@ -606,6 +610,21 @@ def test_the_probe_accepts_a_cluster_user_granted_only_the_written_columns():
         ).strip()
         == "0"
     )
+
+
+def test_a_replica_denying_the_probe_is_the_checked_target_of_its_replicated_shard():
+    """That same replica checks the target of its own insert, so it is the one verified target an
+    internally replicated shard needs while its other replica is down."""
+    response = write(
+        "/column_granted_replicated/write", "column_granted_replicated_metric"
+    )
+    assert response.status_code == 204, response.text
+    on_the_shards = count_on_the_shards(
+        "prom_column_granted_replicated",
+        "column_granted_replicated_metric",
+        table="ts_column_granted",
+    )
+    assert on_the_shards == 1
 
 
 def test_remote_write_metadata_needs_a_wrapper_declaring_its_columns():

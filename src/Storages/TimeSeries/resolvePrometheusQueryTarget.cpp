@@ -186,6 +186,7 @@ namespace
         const auto string_type = std::make_shared<DataTypeString>();
         const auto create_header = std::make_shared<const Block>(Block{{string_type, "statement"}});
         const auto describe_header = std::make_shared<const Block>(Block{{string_type, "name"}, {string_type, "type"}});
+        const auto setting_header = std::make_shared<const Block>(Block{{string_type, "s"}});
 
         /// On the server's own context, and only ever after the caller's own grants are checked: a read
         /// requires READ ON REMOTE above, so the probe reports nothing the caller's own cluster() could not.
@@ -243,6 +244,23 @@ namespace
             RemoteQueryExecutor probe(pool, query, header, probe_context);
             for (Block block = probe.readBlock(); !block.empty(); block = probe.readBlock())
                 on_block(convertBLOBColumns(block));
+        };
+
+        /// getSetting needs no grant and throws on a server that does not know the setting,
+        /// so only a replica that will refuse a wrong target on its own insert passes.
+        auto checks_own_insert = [&](const auto & pool)
+        {
+            bool answered = false;
+            try
+            {
+                ask(pool, "SELECT getSetting('insert_expected_table_engine') AS s", setting_header,
+                    [&](const Block &) { answered = true; });
+            }
+            catch (const Exception &)
+            {
+                return false;
+            }
+            return answered;
         };
 
         for (const auto [shard_info, shard_addresses] : std::views::zip(cluster->getShardsInfo(), cluster->getShardsAddresses()))
@@ -315,10 +333,17 @@ namespace
                     /// A column-level INSERT, all the write itself needs, does not carry the right to read metadata:
                     /// a replica that may not answer here is left to the check its own insert makes on its target.
                     if (e.code() == ErrorCodes::ACCESS_DENIED)
-                        continue;
+                    {
+                        if (!for_write || checks_own_insert(pool))
+                        {
+                            ++verified_on_shard;
+                            continue;
+                        }
+                        unavailable = "denies the probe and does not check its own insert";
+                    }
                     /// The entry's own database is selected on the connection and the wrapper's qualifies the
                     /// name, so either of the two can be the one the replica could not find; name both, once each.
-                    if (e.code() == ErrorCodes::UNKNOWN_DATABASE)
+                    else if (e.code() == ErrorCodes::UNKNOWN_DATABASE)
                     {
                         Strings databases;
                         if (!remote_id.database_name.empty())

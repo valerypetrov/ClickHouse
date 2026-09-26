@@ -45,5 +45,25 @@
                 </replica>
             </shard>
         </two_shards_column_granted>
+        <!-- One internally replicated shard over those same credentials, its second replica down: nothing listens on 1234. -->
+        <one_shard_column_granted_replicated>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>localhost</host>
+                    <port>9000</port>
+                    <default_database>shard_0</default_database>
+                    <user>prom_cluster_column_user</user>
+                    <password></password>
+                </replica>
+                <replica>
+                    <host>localhost</host>
+                    <port>1234</port>
+                    <default_database>shard_0</default_database>
+                    <user>prom_cluster_column_user</user>
+                    <password></password>
+                </replica>
+            </shard>
+        </one_shard_column_granted_replicated>
     </remote_servers>
 </clickhouse>

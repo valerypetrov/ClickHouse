@@ -82,6 +82,14 @@
                     <table>default.prom_column_granted_bad</table>
                 </handler>
             </column_granted_bad_write>
+            <!-- The same credentials over one internally replicated shard whose other replica is down. -->
+            <column_granted_replicated_write>
+                <url>/column_granted_replicated/write</url>
+                <handler>
+                    <type>write</type>
+                    <table>default.prom_column_granted_replicated</table>
+                </handler>
+            </column_granted_replicated_write>
             <!-- Wrappers retyped away from the outer schema of a TimeSeries table, and one declaring it. -->
             <retyped_name_write>
                 <url>/retyped_name/write</url>
