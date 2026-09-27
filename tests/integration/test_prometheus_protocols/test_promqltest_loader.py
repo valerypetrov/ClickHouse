@@ -46,11 +46,18 @@ def test_stale_marker_scenario_exclusion(tmp_path: Path):
             """
         )
     )
-    cases = [scenario.evals[0] for scenario in loader.parse_test_file(path)]
-    assert len(cases) == 2
-    for case in cases:
-        assert case.exclusion_reason() == "stale_marker"
-        assert loader.classify_eval(case) == "excluded_assertion"
+    loaded, expected = [scenario.evals[0] for scenario in loader.parse_test_file(path)]
+    assert loaded.exclusion_reason() is None
+    assert loader.classify_eval(loaded) is None
+    assert expected.exclusion_reason() == "stale_marker"
+    assert loader.classify_eval(expected) == "excluded_assertion"
+
+
+def test_insert_stale_marker_bits():
+    spec = loader.parse_series_line("metric 0 stale NaN")
+    values = loader.series_insert_values(10, spec)
+    assert values.count("reinterpretAsFloat64(0x7FF0000000000002)") == 1
+    assert values.count(", nan)") == 1
 
 
 def test_native_histogram_token():
