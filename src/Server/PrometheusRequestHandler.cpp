@@ -13,6 +13,7 @@
 #include <Poco/URI.h>
 #include <Common/logger_useful.h>
 #include <Common/maskSensitiveQueryParameters.h>
+#include <Common/OpenTelemetryTraceContext.h>
 #include <Common/setThreadName.h>
 #include "config.h"
 
@@ -171,6 +172,13 @@ protected:
         if (context)
             query_scope = QueryScope::create(context);
 
+        /// Set up the OpenTelemetry tracing context for this request on the current thread.
+        OpenTelemetry::TracingContextHolder thread_trace_context("PrometheusRequestHandler",
+            context->getClientInfo().client_trace_context,
+            context->getSettingsRef(),
+            context->getOpenTelemetrySpanLog());
+        thread_trace_context.root_span.kind = OpenTelemetry::SpanKind::SERVER;
+
         handlingRequestWithContext(request, response);
     }
 
@@ -205,6 +213,17 @@ protected:
     void makeContext(HTTPServerRequest & request)
     {
         context = session->makeQueryContext();
+
+        /// Parse the OpenTelemetry traceparent header.
+        if (request.has("traceparent"))
+        {
+            auto & client_trace_context = context->getClientTraceContext();
+            String traceparent = request.get("traceparent");
+            String error;
+            if (!client_trace_context.parseTraceparentHeader(traceparent, error))
+                LOG_DEBUG(log(), "Failed to parse OpenTelemetry traceparent header '{}': {}", traceparent, error);
+            client_trace_context.tracestate = request.get("tracestate", "");
+        }
 
         /// Anything else beside HTTP POST should be readonly queries.
         setReadOnlyIfHTTPMethodIdempotent(context, request.getMethod());
