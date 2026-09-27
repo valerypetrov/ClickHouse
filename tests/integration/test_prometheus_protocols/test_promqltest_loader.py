@@ -162,11 +162,42 @@ def test_native_histogram_selector_exclusion(tmp_path: Path):
         assert by_expr[expr].exclusion_reason() is None, expr
 
 
+def test_load_with_nhcb_selector_exclusion(tmp_path: Path):
+    text = textwrap.dedent(
+        """
+        load_with_nhcb 5m
+          hist_bucket{job="a", le="1"} 0+1x10
+          hist_bucket{job="a", le="+Inf"} 0+2x10
+          hist_count{job="a"} 0+2x10
+
+        eval instant at 50m histogram_quantile(0.5, hist_bucket)
+            {job="a"} 1
+
+        eval instant at 50m hist_count
+            hist_count{job="a"} 20
+
+        eval instant at 50m histogram_count(hist)
+            {job="a"} 20
+
+        eval instant at 50m count({job="a"})
+            {} 4
+        """
+    )
+    path = tmp_path / "nhcb.test"
+    path.write_text(text)
+    scenarios = loader.parse_test_file(path)
+    by_expr = {ev.expr: ev for sc in scenarios for ev in sc.evals}
+    for expr in ("histogram_quantile(0.5, hist_bucket)", "hist_count"):
+        assert loader.classify_eval(by_expr[expr]) is None, expr
+    for expr in ("histogram_count(hist)", 'count({job="a"})'):
+        assert loader.classify_eval(by_expr[expr]) == "excluded_native_histogram", expr
+
+
 def test_snapshot_manifest_is_complete():
     scenarios = loader.parse_all_files()
     loader.assert_manifest_complete(scenarios)
     ids = loader.manifest_eval_ids(scenarios)
-    assert len(ids) == 1129
+    assert len(ids) == 1320
 
 
 def test_clear_isolates_scenarios(tmp_path: Path):
