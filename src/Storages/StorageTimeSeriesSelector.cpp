@@ -36,6 +36,7 @@
 #include <Storages/TimeSeries/TimeSeriesSettings.h>
 #include <Storages/TimeSeries/TimeSeriesTagNames.h>
 #include <Storages/TimeSeries/TimeSeriesVersion.h>
+#include <Storages/TimeSeries/makeASTSelectFromTimeSeries.h>
 #include <Storages/TimeSeries/splitTimeSeriesType.h>
 #include <Storages/TimeSeries/timeSeriesTypesToAST.h>
 
@@ -417,7 +418,8 @@ namespace
         const std::unordered_map<String, String> & column_name_by_tag_name,
         const std::optional<DateTime64> & min_time,
         const std::optional<DateTime64> & max_time,
-        const DataTypePtr & table_timestamp_type)
+        const DataTypePtr & table_timestamp_type,
+        const ASTPtr & tags_filter)
     {
         auto select_query = make_intrusive<ASTSelectQuery>();
 
@@ -460,6 +462,8 @@ namespace
         /// WHERE <filter>
         {
             auto where_filter = makeWhereFilterForTagsTable(matchers, column_name_by_tag_name, min_time, max_time, table_timestamp_type);
+            if (tags_filter)
+                where_filter = makeASTForLogicalAnd({std::move(where_filter), tags_filter->clone()});
             select_query->setExpression(ASTSelectQuery::Expression::WHERE, std::move(where_filter));
         }
 
@@ -930,14 +934,16 @@ ASTPtr StorageTimeSeriesSelector::makeSelectIDsQuery(
     const PrometheusQueryTree::MatcherList & matchers,
     const std::optional<DateTime64> & min_time,
     const std::optional<DateTime64> & max_time,
-    UInt32 time_scale)
+    UInt32 time_scale,
+    const ASTPtr & tags_filter)
 {
     /// If the time range contains no timestamp of the table, no series can have samples in it: the tags table isn't read.
     const auto table_time_range = makeTableTimeRange(table_timestamp_type, min_time, max_time, time_scale);
     auto select_query = table_time_range.empty()
         ? makeSelectNoIDsQuery(table_id_type)
         : makeSelectQueryFromTagsTable(
-            tags_table_id, matchers, makeColumnNameByTagNameMap(time_series_settings), table_time_range.min_time, table_time_range.max_time, table_timestamp_type);
+            tags_table_id, matchers, makeColumnNameByTagNameMap(time_series_settings), table_time_range.min_time, table_time_range.max_time, table_timestamp_type,
+            tags_filter);
 
     /// Alias the returned expression (`timeSeriesStoreTags(...)`, which returns `id`) so callers can reference the column by a fixed name.
     const auto & select_with_union = typeid_cast<const ASTSelectWithUnionQuery &>(*select_query);
@@ -961,6 +967,7 @@ void StorageTimeSeriesSelector::readImpl(
     auto time_series_storage = storagePtrToTimeSeries(DatabaseCatalog::instance().getTable(config.time_series_storage_id, context));
     checkTimeSeriesVersionSupportedByPromQL(*time_series_storage);
     auto time_series_settings = time_series_storage->getStorageSettings();
+    auto tags_filter = makeTagsTableFilterForTimeSeries(*time_series_storage, context);
 
     const auto & matchers = typeid_cast<const PrometheusQueryTree::InstantSelector &>(*config.selector.getRoot()).matchers;
 
@@ -1006,7 +1013,7 @@ void StorageTimeSeriesSelector::readImpl(
     }
 
     ASTPtr select_query_from_tags_table = makeSelectQueryFromTagsTable(
-        tags_table_id, matchers, column_name_by_tag_name, min_time_to_filter_ids, max_time_to_filter_ids, config.table_timestamp_type);
+        tags_table_id, matchers, column_name_by_tag_name, min_time_to_filter_ids, max_time_to_filter_ids, config.table_timestamp_type, tags_filter);
 
     auto samples_table_metadata = time_series_storage->getTargetTable(samples_table_kind, context)->getInMemoryMetadataPtr(context, false);
     auto tags_table_metadata = time_series_storage->getTargetTable(ViewTarget::Tags, context)->getInMemoryMetadataPtr(context, false);

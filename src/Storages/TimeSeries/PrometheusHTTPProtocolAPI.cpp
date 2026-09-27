@@ -29,6 +29,7 @@
 #include <Storages/TimeSeries/TimeSeriesSettings.h>
 #include <Storages/TimeSeries/TimeSeriesVersion.h>
 #include <Storages/TimeSeries/getPromQLResultTimestampType.h>
+#include <Storages/TimeSeries/makeASTSelectFromTimeSeries.h>
 #include <Storages/TimeSeries/splitTimeSeriesType.h>
 #include <Interpreters/executeQuery.h>
 #include <Interpreters/Context.h>
@@ -53,6 +54,7 @@ namespace DB
 
 namespace ErrorCodes
 {
+    extern const int ACCESS_DENIED;
     extern const int BAD_ARGUMENTS;
     extern const int LOGICAL_ERROR;
 }
@@ -550,6 +552,7 @@ ASTPtr PrometheusHTTPProtocolAPI::makeSeriesIDsQuery(
     }
 
     auto tags_table_id = tags_table->getStorageID();
+    auto tags_filter = makeTagsTableFilterForTimeSeries(*time_series_storage, getContext());
 
     /// Each `match[]` value must be an instant selector; the result is the union of the series matched by each selector.
     auto union_query = make_intrusive<ASTSelectWithUnionQuery>();
@@ -575,7 +578,7 @@ ASTPtr PrometheusHTTPProtocolAPI::makeSeriesIDsQuery(
                             quoteString(match_param));
 
         auto select_ids_query = StorageTimeSeriesSelector::makeSelectIDsQuery(
-            tags_table_id, *time_series_settings, table_timestamp_type, table_id_type, matchers, min_time, max_time, time_scale);
+            tags_table_id, *time_series_settings, table_timestamp_type, table_id_type, matchers, min_time, max_time, time_scale, tags_filter);
         const auto & select_ids = typeid_cast<const ASTSelectWithUnionQuery &>(*select_ids_query);
         list_of_selects->children.push_back(select_ids.list_of_selects->children.at(0));
     }
@@ -691,6 +694,11 @@ void PrometheusHTTPProtocolAPI::getMetadata(
     QueryFinishCallback query_finish_callback)
 {
     const auto time_series_storage_id = time_series_storage->getStorageID();
+
+    /// The metadata isn't stored per time series, so it can't be filtered like the time series are.
+    if (makeTagsTableFilterForTimeSeries(*time_series_storage, getContext()))
+        throw Exception(ErrorCodes::ACCESS_DENIED, "Cannot read the metrics metadata of table {} with a row policy or an additional_table_filters entry",
+                        time_series_storage_id.getNameForLogs());
 
     const char * metric_family_column_name = TimeSeriesColumnNames::getInnerMetricFamily(time_series_storage->getVersion());
 

@@ -28,6 +28,9 @@ ASTPtr makeASTSelectFromTimeSeries(
     const SelectQueryInfo & query_info,
     const ContextPtr & context);
 
+/// Returns the filter of the row policies and `additional_table_filters` of a TimeSeries table on its "tags" table, or nullptr.
+ASTPtr makeTagsTableFilterForTimeSeries(const StorageTimeSeries & storage, const ContextPtr & context);
+
 /// The settings the generated read query must run with, independent of the caller's session/profile.
 /// Apply them to the (child) context that runs `makeASTSelectFromTimeSeries`.
 SettingsChanges getSettingsForSelectFromTimeSeries();

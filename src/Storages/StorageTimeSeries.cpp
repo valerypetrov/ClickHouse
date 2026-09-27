@@ -1231,6 +1231,15 @@ columns and without the metric name, and the `all_tags` column is an ephemeral c
 with all the tags except the metric name.
 </Note>
 
+## Row policies {#row-policies}
+
+A [row policy](/reference/statements/create/row-policy) on a `TimeSeries` table and an entry of the
+[additional_table_filters](/reference/settings/session-settings#additional_table_filters) setting for it also filter
+the time series read by PromQL, by the Prometheus remote-read protocol and by the `/api/v1/series`, `/api/v1/labels`
+and `/api/v1/label/<name>/values` endpoints. There such a filter can use only the columns `metric_name` and `tags`,
+otherwise the read fails with the `ACCESS_DENIED` error. The `/api/v1/metadata` endpoint fails with the same error
+for a table with such a filter.
+
 ## Table engines of inner target tables {#inner-table-engines}
 
 By default inner target tables use the following table engines:

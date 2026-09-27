@@ -6,8 +6,10 @@
 #include <Analyzer/ConstantNode.h>
 #include <Analyzer/FunctionNode.h>
 #include <Analyzer/IQueryTreeNode.h>
+#include <Common/Exception.h>
 #include <Common/SettingsChanges.h>
 #include <Core/Field.h>
+#include <Core/Settings.h>
 #include <Interpreters/Context.h>
 #include <Core/Joins.h>
 #include <Core/Names.h>
@@ -21,6 +23,9 @@
 #include <Parsers/ASTSelectWithUnionQuery.h>
 #include <Parsers/ASTSubquery.h>
 #include <Parsers/ASTTablesInSelectQuery.h>
+#include <Parsers/ExpressionListParsers.h>
+#include <Parsers/makeASTForLogicalFunction.h>
+#include <Parsers/parseQuery.h>
 #include <Storages/SelectQueryInfo.h>
 #include <Storages/StorageTimeSeries.h>
 #include <Storages/TimeSeries/TimeSeriesColumnNames.h>
@@ -33,6 +38,19 @@
 
 namespace DB
 {
+
+namespace ErrorCodes
+{
+    extern const int ACCESS_DENIED;
+}
+
+namespace Setting
+{
+    extern const SettingsMap additional_table_filters;
+    extern const SettingsUInt64 max_parser_backtracks;
+    extern const SettingsUInt64 max_parser_depth;
+    extern const SettingsUInt64 max_query_size;
+}
 
 namespace TimeSeriesSetting
 {
@@ -232,6 +250,20 @@ namespace
         return metric_name;
     }
 
+    /// Returns `timeSeriesTagsToMap(tags, '<tag_name_1>', <tag_column_1>, ...)`, the outer `tags` column with all the tags.
+    ASTPtr makeExpressionForAllOuterTags(const std::unordered_map<String, String> & columns_by_tags)
+    {
+        ASTs args;
+        args.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Tags));
+        /// `columns_by_tags` already includes `__name__` -> `metric_name`.
+        for (const auto & [tag_name, column_name] : columns_by_tags)
+        {
+            args.push_back(make_intrusive<ASTLiteral>(tag_name));
+            args.push_back(make_intrusive<ASTIdentifier>(column_name));
+        }
+        return makeASTFunction("timeSeriesTagsToMap", std::move(args));
+    }
+
     /// Returns an expression for the outer `tags` column.
     /// It is either `map('<tag_name_1>', toString(ifNull(<tag_column_1>, '')), ...)`
     /// with only the requested tags (if `requested_tags` is not empty;
@@ -262,19 +294,41 @@ namespace
             /// The full Map: combines the inner `tags` Map, the metric name (as the `__name__` tag), and the tags
             /// that have their own columns via the `tags_to_columns` setting into one Map(String, String),
             /// sorted by tag name with duplicates and empty values removed.
-            ASTs args;
-            args.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::Tags));
-            /// `columns_by_tags` already includes `__name__` -> `metric_name`.
-            for (const auto & [tag_name, column_name] : columns_by_tags)
-            {
-                args.push_back(make_intrusive<ASTLiteral>(tag_name));
-                args.push_back(make_intrusive<ASTIdentifier>(column_name));
-            }
-            tags = makeASTFunction("timeSeriesTagsToMap", std::move(args));
+            tags = makeExpressionForAllOuterTags(columns_by_tags);
         }
 
         tags->setAlias(TimeSeriesColumnNames::Tags);
         return tags;
+    }
+
+    /// Rewrites a filter on the outer columns `metric_name` and `tags` in place to read the "tags" table, or returns false if it uses anything else.
+    bool rewriteFilterForTagsTable(ASTPtr & node, const std::unordered_map<String, String> & columns_by_tags)
+    {
+        if (!node->tryGetAlias().empty())
+            return false;
+
+        if (const auto * identifier = node->as<ASTIdentifier>())
+        {
+            if (identifier->compound())
+                return false;
+            if (identifier->name() == TimeSeriesColumnNames::MetricName)
+                node = makeExpressionForOuterTag(TimeSeriesTagNames::MetricName, TimeSeriesColumnNames::MetricName);
+            else if (identifier->name() == TimeSeriesColumnNames::Tags)
+                node = makeExpressionForAllOuterTags(columns_by_tags);
+            else
+                return false;
+            return true;
+        }
+
+        if (!node->as<ASTFunction>() && !node->as<ASTLiteral>() && !node->as<ASTExpressionList>())
+            return false;
+
+        for (auto & child : node->children)
+        {
+            if (!rewriteFilterForTagsTable(child, columns_by_tags))
+                return false;
+        }
+        return true;
     }
 
     /// Wraps a single SELECT in an ASTSelectWithUnionQuery, which is the shape
@@ -766,6 +820,50 @@ ASTPtr makeASTSelectFromTimeSeries(
     chassert(need_tags);
     return buildSelectQueryFromMultipleTables(*tags_table_id, samples_table_id, metric_families_table_id, metric_family_column_name,
                                               requested_columns, requested_tags, columns_by_tags, samples_outer_column_name_and_type, deduplicate_tags_by_id);
+}
+
+ASTPtr makeTagsTableFilterForTimeSeries(const StorageTimeSeries & storage, const ContextPtr & context)
+{
+    ASTs filters;
+
+    if (auto row_policy_filter = getEffectiveRowPolicyFilter(storage, context))
+    {
+        if (context->hasQueryContext())
+        {
+            for (const auto & row_policy : row_policy_filter->policies)
+                context->getQueryContext()->addUsedRowPolicy(row_policy->getFullName().toString());
+        }
+        filters.push_back(row_policy_filter->expression->clone());
+    }
+
+    /// The entry of `additional_table_filters` is found the same way as the planner does it for a table.
+    const auto storage_id = storage.getStorageID();
+    const auto & settings = context->getSettingsRef();
+    for (const auto & additional_filter : settings[Setting::additional_table_filters].value)
+    {
+        const auto & tuple = additional_filter.safeGet<Tuple>();
+        const auto & table = tuple.at(0).safeGet<String>();
+        if ((table == storage_id.getFullNameNotQuoted())
+            || ((table == storage_id.getTableName()) && (context->getCurrentDatabase() == storage_id.getDatabaseName())))
+        {
+            const auto & filter = tuple.at(1).safeGet<String>();
+            ParserExpression parser;
+            filters.push_back(parseQuery(
+                parser, filter.data(), filter.data() + filter.size(), "additional filter",
+                settings[Setting::max_query_size], settings[Setting::max_parser_depth], settings[Setting::max_parser_backtracks]));
+            break;
+        }
+    }
+
+    if (filters.empty())
+        return nullptr;
+
+    ASTPtr filter = makeASTForLogicalAnd(std::move(filters));
+    if (!rewriteFilterForTagsTable(filter, getColumnsByTags(*storage.getStorageSettings())))
+        throw Exception(ErrorCodes::ACCESS_DENIED,
+            "Cannot read time series from table {}: its row policy or additional_table_filters entry uses something other than the columns {} and {}",
+            storage_id.getNameForLogs(), TimeSeriesColumnNames::MetricName, TimeSeriesColumnNames::Tags);
+    return filter;
 }
 
 SettingsChanges getSettingsForSelectFromTimeSeries()

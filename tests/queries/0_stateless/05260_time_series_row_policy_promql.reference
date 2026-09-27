@@ -1,0 +1,24 @@
+-- a policy on a tag
+[1]
+[1]
+[1]
+[1]
+-- a policy on a tag with its own column and on the metric name
+[2]
+[2]
+[2]
+[2]
+-- a policy on the whole tags map
+[1]
+[1]
+[1]
+[1]
+-- a policy on another column is refused
+[]
+ACCESS_DENIED
+ACCESS_DENIED
+ACCESS_DENIED
+-- additional_table_filters
+[2]
+[1]
+ACCESS_DENIED
