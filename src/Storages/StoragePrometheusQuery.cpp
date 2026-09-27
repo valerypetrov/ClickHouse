@@ -198,11 +198,11 @@ void StoragePrometheusQuery::readImpl(
     auto time_series_storage = storagePtrToTimeSeries(DatabaseCatalog::instance().getTable(config.evaluation_settings.time_series_storage_id, context));
     checkTimeSeriesVersionSupportedByPromQL(*time_series_storage);
 
-    LOG_INFO(log, "Building SQL to evaluate promql: {}", *config.promql_query);
+    LOG_DEBUG(log, "Building SQL to evaluate promql: {}", *config.promql_query);
     PrometheusQueryToSQL::Converter converter{config.promql_query, config.evaluation_settings};
     ASTPtr select_query = converter.getSQL();
 
-    LOG_INFO(log, "Will execute query:\n{}", select_query->formatForLogging());
+    LOG_TRACE(log, "Will execute query:\n{}", select_query->formatForLogging());
     auto options = SelectQueryOptions(QueryProcessingStage::Complete, 0, false, query_info.settings_limit_offset_done);
 
     /// Isolate the settings required by generated PromQL from the outer query.
