@@ -111,6 +111,10 @@ Block makeTimeSeriesBlock(
 
     for (const auto & element : time_series)
     {
+        /// A series without float samples (e.g. only histograms) has no data to store, so it gets no tags row.
+        if (element.samples().empty())
+            continue;
+
         std::string_view metric_name;
         bool has_metric_name = false;
         for (const auto & label : element.labels())
@@ -222,8 +226,12 @@ Block makeBlock(
     const StorageInMemoryMetadata & metadata,
     const String & samples_column_name)
 {
+    size_t num_time_series_rows = 0;
+    for (const auto & element : time_series)
+        num_time_series_rows += !element.samples().empty();
+
     Block block;
-    if (!time_series.empty())
+    if (num_time_series_rows)
     {
         appendBlock(
             block,
@@ -233,7 +241,7 @@ Block makeBlock(
     {
         appendBlock(
             block,
-            makeMetricsMetadataBlock(metrics_metadata, time_series.size(), metadata));
+            makeMetricsMetadataBlock(metrics_metadata, num_time_series_rows, metadata));
     }
     return block;
 }

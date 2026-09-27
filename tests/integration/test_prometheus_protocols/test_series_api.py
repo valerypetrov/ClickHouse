@@ -8,6 +8,7 @@ from helpers.test_tools import assert_eq_with_retry
 from .prometheus_test_utils import (
     convert_time_series_to_protobuf,
     send_protobuf_to_remote_write,
+    types_pb2,
 )
 
 cluster = ClickHouseCluster(__file__)
@@ -279,3 +280,43 @@ def test_series_records_query_finish():
         )
         > 0
     )
+
+
+def test_series_without_float_samples_is_not_stored():
+    write_request = convert_time_series_to_protobuf(
+        [
+            ({"__name__": "histogram_only_metric"}, {}),
+            ({"__name__": "exemplar_only_metric"}, {}),
+            ({"__name__": "float_metric"}, {1000: 1.0}),
+        ]
+    )
+    write_request.timeseries[0].histograms.append(
+        types_pb2.Histogram(count_int=1, sum=1.0, timestamp=1000000)
+    )
+    write_request.timeseries[1].exemplars.append(
+        types_pb2.Exemplar(value=1.0, timestamp=1000000)
+    )
+    write_request.metadata.append(
+        types_pb2.MetricMetadata(
+            metric_family_name="float_metric", type=types_pb2.MetricMetadata.GAUGE
+        )
+    )
+    send_protobuf_to_remote_write(node.ip_address, 9093, "/write", write_request)
+
+    names = "'histogram_only_metric', 'exemplar_only_metric', 'float_metric'"
+    assert (
+        node.query(
+            f"SELECT metric_name FROM timeSeriesTags(prometheus) WHERE metric_name IN ({names})"
+        )
+        == "float_metric\n"
+    )
+    assert (
+        node.query(
+            "SELECT type FROM timeSeriesMetricFamilies(prometheus) "
+            "WHERE metric_family = 'float_metric'"
+        )
+        == "gauge\n"
+    )
+    selector = '{__name__=~"histogram_only_metric|exemplar_only_metric|float_metric"}'
+    data = get_json_from_api("/api/v1/series", params={"match[]": selector})["data"]
+    assert data == [{"__name__": "float_metric"}]
