@@ -53,6 +53,32 @@ namespace
         OneArgumentAggregationTransform transform_ast;
     };
 
+    /// Prometheus returns NaN for stddev and stdvar of a group holding NaN or Inf, even a lone one.
+    /// arrayMap((r, bad) -> if(bad, nan, r), result, maxForEach(arrayMap(x -> NOT isFinite(x), values)))
+    ASTPtr setNaNWhereNotFinite(ASTPtr && result, const ASTPtr & values)
+    {
+        return makeASTFunction(
+            "arrayMap",
+            makeASTFunction(
+                "lambda",
+                makeASTFunction("tuple", make_intrusive<ASTIdentifier>("r"), make_intrusive<ASTIdentifier>("bad")),
+                makeASTFunction(
+                    "if",
+                    make_intrusive<ASTIdentifier>("bad"),
+                    timeSeriesScalarToAST(std::numeric_limits<Float64>::quiet_NaN()),
+                    make_intrusive<ASTIdentifier>("r"))),
+            std::move(result),
+            makeASTFunction(
+                "maxForEach",
+                makeASTFunction(
+                    "arrayMap",
+                    makeASTFunction(
+                        "lambda",
+                        makeASTFunction("tuple", make_intrusive<ASTIdentifier>("x")),
+                        makeASTFunction("not", makeASTFunction("isFinite", make_intrusive<ASTIdentifier>("x")))),
+                    values->clone())));
+    }
+
     const ImplInfo * getImplInfo(std::string_view operator_name)
     {
         static const std::unordered_map<std::string_view, ImplInfo> impl_map = {
@@ -104,13 +130,13 @@ namespace
             {"stddev",
              {
                 [](ASTPtr && v) -> ASTPtr
-                { return makeASTFunction("stddevPopStableForEach", std::move(v)); },
+                { return setNaNWhereNotFinite(makeASTFunction("stddevPopStableForEach", v), v); },
             }},
 
             {"stdvar",
              {
                 [](ASTPtr && v) -> ASTPtr
-                { return makeASTFunction("varPopStableForEach", std::move(v)); },
+                { return setNaNWhereNotFinite(makeASTFunction("varPopStableForEach", v), v); },
             }},
 
             {"group",
