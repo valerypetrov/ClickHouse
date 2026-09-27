@@ -459,12 +459,17 @@ public:
         LOG_INFO(log(), "Handling Prometheus HTTP API query request from {}", request.get("User-Agent", ""));
         chassert(config().type == PrometheusRequestHandlerConfig::Type::Query
             || config().type == PrometheusRequestHandlerConfig::Type::APIv1);
+        empty_result = getEmptyResult(Poco::URI(request.getURI()).getPath());
     }
 
     bool isSettingLikeParameter(const String & name) override
     {
         /// Empty parameter appears when URL like ?&a=b or a=b&&c=d. Just skip them for user's convenience.
         if (name.empty())
+            return false;
+
+        /// The endpoints with an empty result run no query, so their parameters are not settings.
+        if (empty_result)
             return false;
 
         /// Some parameters (default_format, everything used in the code above) do not belong to the
@@ -511,6 +516,12 @@ public:
                 /// The format_query endpoint only parses and reformats the given PromQL expression,
                 /// so it doesn't need the TimeSeries table.
                 formatQuery(getOutputStream(response), params->get("query", ""));
+                return;
+            }
+
+            if (empty_result)
+            {
+                writeString(*empty_result, getOutputStream(response));
                 return;
             }
 
@@ -647,6 +658,20 @@ public:
     }
 
 private:
+    /// ClickHouse has no rules, alerts or exemplars, so these endpoints always return an empty result.
+    static std::optional<std::string_view> getEmptyResult(std::string_view uri_path)
+    {
+        if (uri_path.ends_with("/rules"))
+            return R"({"status":"success","data":{"groups":[]}})";
+        if (uri_path.ends_with("/alerts"))
+            return R"({"status":"success","data":{"alerts":[]}})";
+        if (uri_path.ends_with("/query_exemplars"))
+            return R"({"status":"success","data":[]})";
+        return std::nullopt;
+    }
+
+    std::optional<std::string_view> empty_result;
+
     /// Handles the format_query endpoint: parses the PromQL expression given in the 'query' parameter
     /// and writes it back serialized from the parsed tree, i.e. with the whitespace normalized,
     /// the comments removed, and the redundant parentheses dropped.
