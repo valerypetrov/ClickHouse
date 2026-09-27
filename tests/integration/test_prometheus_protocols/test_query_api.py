@@ -1,8 +1,11 @@
+import gzip
 import urllib
 import uuid
+import zlib
 
 import pytest
 import requests
+import zstandard
 
 from helpers.cluster import ClickHouseCluster
 from helpers.test_tools import assert_eq_with_retry
@@ -268,6 +271,7 @@ def test_query_after_response_sent():
     # Same as `test_error_after_first_block`, except `http_response_buffer_size=1` flushes
     # the response buffer as soon as the first block is written. The head is therefore
     # already on the wire when the query throws, and the handler has no way back.
+    # The response is not compressed, because a compressor would hold the small body back.
     url = (
         f"http://{node.ip_address}:9093/api/v1/query_range"
         f"?query={urllib.parse.quote_plus('stream_error')}"
@@ -277,7 +281,7 @@ def test_query_after_response_sent():
         f"&max_result_rows={STREAM_ERROR_ROW_LIMIT}"
         f"&result_overflow_mode=throw"
     )
-    with requests.get(url, stream=True) as response:
+    with requests.get(url, headers={"Accept-Encoding": "identity"}, stream=True) as response:
         assert response.status_code == 200, (
             f"expected head to be sent before the throw, "
             f"got {response.status_code}: {response.text!r}"
@@ -303,6 +307,44 @@ def test_query_after_response_sent():
         # distinguishes a deliberate abort from the connection merely dropping.
         assert b"__exception__" in received, received
         assert b"Limit for result exceeded" in received, received
+
+
+@pytest.mark.parametrize(
+    ("encoding", "decompress"),
+    [
+        ("gzip", gzip.decompress),
+        ("deflate", zlib.decompress),
+        ("zstd", lambda data: zstandard.ZstdDecompressor().decompressobj().decompress(data)),
+    ],
+)
+def test_response_compression(encoding, decompress):
+    url = (
+        f"http://{node.ip_address}:9093/api/v1/query_range"
+        "?query=sum(stream_error)&start=100&end=200&step=10"
+    )
+    plain = requests.get(url, headers={"Accept-Encoding": "identity"})
+    assert plain.status_code == 200, plain.text
+    assert "Content-Encoding" not in plain.headers
+    assert plain.json()["status"] == "success"
+
+    with requests.get(url, headers={"Accept-Encoding": encoding}, stream=True) as response:
+        assert response.status_code == 200
+        assert response.headers["Content-Encoding"] == encoding
+        assert decompress(response.raw.read(decode_content=False)) == plain.content
+
+    # An error response is compressed too, and it is still a well-formed error envelope.
+    error_url = f"http://{node.ip_address}:9093/api/v1/query?query=%28%28&time=150"
+    response = requests.get(error_url, headers={"Accept-Encoding": encoding})
+    assert response.status_code == 400, response.text
+    assert response.headers["Content-Encoding"] == encoding
+    assert "while parsing PromQL query" in extract_error_from_http_api_response(response)
+
+    # `enable_http_compression=0` turns the compression off.
+    response = requests.get(
+        url + "&enable_http_compression=0", headers={"Accept-Encoding": encoding}
+    )
+    assert "Content-Encoding" not in response.headers
+    assert response.content == plain.content
 
 
 def test_table_query_param():

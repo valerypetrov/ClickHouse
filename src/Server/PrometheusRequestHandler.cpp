@@ -1,5 +1,6 @@
 #include <Server/PrometheusRequestHandler.h>
 
+#include <IO/CompressionMethod.h>
 #include <IO/HTTPCommon.h>
 #include <IO/ReadBuffer.h>
 #include <Server/HTTP/WriteBufferFromHTTPServerResponse.h>
@@ -46,7 +47,9 @@ namespace DB
 
 namespace Setting
 {
+    extern const SettingsBool enable_http_compression;
     extern const SettingsUInt64 http_response_buffer_size;
+    extern const SettingsInt64 http_zlib_compression_level;
 }
 
 namespace ErrorCodes
@@ -78,7 +81,14 @@ protected:
     const PrometheusRequestHandlerConfig & config() { return parent().config; }
     PrometheusMetricsWriter & metrics_writer() { return *parent().metrics_writer; }
     LoggerPtr log() { return parent().log; }
-    WriteBuffer & getOutputStream(HTTPServerResponse & response) { return parent().getOutputStream(response); }
+
+    /// Returns the buffer for the response body: the compressing one if the query API enabled compression.
+    WriteBuffer & getOutputStream(HTTPServerResponse & response)
+    {
+        if (parent().compressed_write_buffer)
+            return *parent().compressed_write_buffer;
+        return parent().getOutputStream(response);
+    }
 
 private:
     PrometheusRequestHandler & parent_ref;
@@ -506,6 +516,8 @@ public:
             /// percent-encoded label name in ".../label/<name>/values" is read correctly.
             const String uri_path = Poco::URI(uri).getPath();
 
+            setResponseCompression(request, response);
+
             if (uri_path.ends_with("/format_query"))
             {
                 /// The format_query endpoint only parses and reformats the given PromQL expression,
@@ -620,12 +632,14 @@ public:
             /// Once the response header has been sent we can no longer produce
             /// a well-formed Prometheus error response. So we let the outer handler
             /// abort the chunked stream via cancelWithException() instead.
-            if (response.sent())
+            /// The same is true once the compressor has taken part of the body.
+            auto & out = getOutputStream(response);
+            if (response.sent() || out.count() != out.offset())
                 throw;
 
             /// Drop any partial success body still sitting in the output buffer
             /// before writing the error response.
-            getOutputStream(response).rejectBufferedDataSave();
+            out.rejectBufferedDataSave();
 
             /// A schema-version rejection (see TimeSeriesVersion.h) is a problem with the server or the table,
             /// not with the query: report it as an internal error so that clients don't attribute it
@@ -640,13 +654,35 @@ public:
             writeJSONString(e.message(), error_buf, FormatSettings{});
             writeString("}", error_buf);
             error_buf.finalize();
-            writeString(error_str, getOutputStream(response));
+            writeString(error_str, out);
 
             LOG_ERROR(log(), "Error executing query: {}", e.displayText());
         }
     }
 
 private:
+    /// Compresses the response with a method from the Accept-Encoding header, like the HTTP interface does.
+    void setResponseCompression(const HTTPServerRequest & request, HTTPServerResponse & response)
+    {
+        const auto & settings = context->getSettingsRef();
+        CompressionMethod method = chooseHTTPCompressionMethod(request.get("Accept-Encoding", ""));
+        if (method == CompressionMethod::None || !settings[Setting::enable_http_compression])
+            return;
+
+        auto & out = parent().getOutputStream(response);
+        parent().compressed_write_buffer = wrapWriteBufferWithCompressionMethod(
+            &out,
+            method,
+            static_cast<int>(settings[Setting::http_zlib_compression_level]),
+            /* zstd_window_log = */ 0,
+            SnappyMode::Framed,
+            DBMS_DEFAULT_BUFFER_SIZE,
+            /* existing_memory = */ nullptr,
+            /* alignment = */ 0,
+            /* compress_empty = */ false);
+        out.setCompressionMethodHeader(method);
+    }
+
     /// Handles the format_query endpoint: parses the PromQL expression given in the 'query' parameter
     /// and writes it back serialized from the parsed tree, i.e. with the whitespace normalized,
     /// the comments removed, and the redundant parentheses dropped.
@@ -836,6 +872,8 @@ void PrometheusRequestHandler::handleRequest(HTTPServerRequest & request, HTTPSe
         impl->beforeHandlingRequest(request);
         impl->handleRequest(request, response);
 
+        if (compressed_write_buffer)
+            compressed_write_buffer->finalize();
         getOutputStream(response).finalize();
     }
     catch (...)
@@ -843,7 +881,7 @@ void PrometheusRequestHandler::handleRequest(HTTPServerRequest & request, HTTPSe
         tryLogCurrentException(log);
 
         ExecutionStatus status = ExecutionStatus::fromCurrentException("", send_stacktrace);
-        getOutputStream(response).cancelWithException(request, status.code, status.message, nullptr);
+        getOutputStream(response).cancelWithException(request, status.code, status.message, compressed_write_buffer.get());
 
         tryCallOnException();
     }
