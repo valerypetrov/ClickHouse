@@ -60,6 +60,8 @@ namespace ErrorCodes
 namespace Setting
 {
     extern const SettingsBool enable_materialized_cte;
+    extern const SettingsQueryResultCacheNondeterministicFunctionHandling query_cache_nondeterministic_function_handling;
+    extern const SettingsBool use_query_cache;
 }
 
 namespace TimeSeriesSetting
@@ -252,6 +254,12 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
         query_context->setSetting("enable_materialized_cte", true);
 
     query_context->setSetting("empty_result_for_aggregation_by_empty_set", false);
+
+    /// The timeSeries* functions only depend on per-query state, so a result at an explicit time is safe to cache.
+    const auto & settings = getContext()->getSettingsRef();
+    if (settings[Setting::use_query_cache] && !evaluation_settings.use_current_time
+        && !settings[Setting::query_cache_nondeterministic_function_handling].changed)
+        query_context->setSetting("query_cache_nondeterministic_function_handling", String("save"));
 
     auto [ast, io] = executeQuery(sql_query->formatWithSecretsOneLine(), query_context, {}, QueryProcessingStage::Complete);
 
