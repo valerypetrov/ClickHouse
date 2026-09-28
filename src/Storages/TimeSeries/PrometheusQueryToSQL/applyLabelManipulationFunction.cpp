@@ -6,6 +6,7 @@
 #include <Parsers/Prometheus/stepsInTimeSeriesRange.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/mergeDuplicateSeries.h>
 #include <Storages/TimeSeries/timeSeriesTypesToAST.h>
 #include <base/insertAtEnd.h>
 
@@ -214,10 +215,10 @@ SQLQueryPiece applyLabelManipulationFunction(
         case StoreMethod::VECTOR_GRID:
         {
             /// Step 1:
-            /// SELECT f(group, 'arg2', 'arg3', ...) AS new_group, any(values) AS values
+            /// SELECT f(group, 'arg2', 'arg3', ...) AS new_group, makeMergedValues(values) AS values
             /// FROM <vector_grid>
             /// GROUP BY new_group
-            /// HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, new_group) = 0
+            /// HAVING makeDuplicateSeriesCheck(values, new_group)
             ASTPtr label_replacing_query;
             {
                 SelectQueryBuilder builder;
@@ -236,22 +237,19 @@ SQLQueryPiece applyLabelManipulationFunction(
                 builder.select_list.push_back(std::move(group_function));
                 builder.select_list.back()->setAlias(ColumnNames::NewGroup);
 
-                builder.select_list.push_back(makeASTFunction("any", make_intrusive<ASTIdentifier>(ColumnNames::Values)));
-                builder.select_list.back()->setAlias(ColumnNames::Values);
-
                 context.subqueries.emplace_back(
                     SQLSubquery{context.subqueries.size(), std::move(first_argument.select_query), SQLSubqueryType::TABLE});
                 builder.from_table = context.subqueries.back().name;
 
+                /// The column is qualified because `values` alone refers to the alias below.
+                ASTPtr values = make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Values});
+
+                builder.select_list.push_back(makeMergedValues(values));
+                builder.select_list.back()->setAlias(ColumnNames::Values);
+
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
-                builder.having = makeASTFunction(
-                    "equals",
-                    makeASTFunction(
-                        "timeSeriesThrowDuplicateSeriesIf",
-                        makeASTFunction("greater", makeASTFunction("count"), make_intrusive<ASTLiteral>(1u)),
-                        make_intrusive<ASTIdentifier>(ColumnNames::NewGroup)),
-                    make_intrusive<ASTLiteral>(0u));
+                builder.having = makeDuplicateSeriesCheck(values, make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
                 label_replacing_query = builder.getSelectQuery();
             }

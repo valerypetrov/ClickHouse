@@ -5,6 +5,7 @@
 #include <Parsers/ASTLiteral.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/mergeDuplicateSeries.h>
 
 
 namespace DB::ErrorCodes
@@ -38,7 +39,7 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
         {
             /// When we remove the metric name `__name__` it's possible that we get the same set of tags (i.e. the same `group`)
             /// on time series which were different before we removed the metric name.
-            /// This is not allowed, we can't have multiple time series with the same set of tags in the same resultset.
+            /// Such time series are merged if they never have values at the same step, otherwise it's an error.
             ///
             /// Example:
             ///             tags                           timestamp1        timestamp2
@@ -54,33 +55,30 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
 
             /// Step 1:
             /// SELECT timeSeriesRemoveTag(group, '__name__') AS new_group,
-            ///        any(values) AS values
+            ///        makeMergedValues(values) AS values
             /// FROM <vector_grid>
             /// GROUP BY new_group
-            /// HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, new_group) = 0
+            /// HAVING makeDuplicateSeriesCheck(values, new_group)
             ASTPtr metric_name_removing_query;
             {
                 SelectQueryBuilder builder;
+
+                context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), std::move(query_piece.select_query), SQLSubqueryType::TABLE});
+                builder.from_table = context.subqueries.back().name;
+
+                /// The column is qualified because `values` alone refers to the alias below.
+                ASTPtr values = make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Values});
 
                 builder.select_list.push_back(makeASTFunction(
                     "timeSeriesRemoveTag", make_intrusive<ASTIdentifier>(ColumnNames::Group), make_intrusive<ASTLiteral>(kMetricName)));
                 builder.select_list.back()->setAlias(ColumnNames::NewGroup);
 
-                builder.select_list.push_back(makeASTFunction("any", make_intrusive<ASTIdentifier>(ColumnNames::Values)));
+                builder.select_list.push_back(makeMergedValues(values));
                 builder.select_list.back()->setAlias(ColumnNames::Values);
-
-                context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), std::move(query_piece.select_query), SQLSubqueryType::TABLE});
-                builder.from_table = context.subqueries.back().name;
 
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
-                builder.having = makeASTFunction(
-                    "equals",
-                    makeASTFunction(
-                        "timeSeriesThrowDuplicateSeriesIf",
-                        makeASTFunction("greater", makeASTFunction("count"), make_intrusive<ASTLiteral>(1u)),
-                        make_intrusive<ASTIdentifier>(ColumnNames::NewGroup)),
-                    make_intrusive<ASTLiteral>(0u));
+                builder.having = makeDuplicateSeriesCheck(values, make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
                 metric_name_removing_query = builder.getSelectQuery();
             }

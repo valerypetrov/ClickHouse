@@ -8,6 +8,7 @@
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/applySimpleFunction.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/dropMetricName.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/mergeDuplicateSeries.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/toVectorGrid.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/transformGroupASTForBinaryOperator.h>
 #include <algorithm>
@@ -100,7 +101,7 @@ namespace
         ///        timeSeriesRemoveAllTagsExcept(group, on_tags) AS join_group,
         ///        values
         /// FROM left
-        /// [GROUP BY join_group HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, join_group) = 0]
+        /// [GROUP BY join_group HAVING makeDuplicateSeriesCheck(values, join_group)]
         ///
         /// Step 2:
         /// new_right:
@@ -108,7 +109,7 @@ namespace
         ///        timeSeriesRemoveAllTagsExcept(group, on_tags) AS join_group,
         ///        values
         /// FROM right
-        /// [GROUP BY join_group HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, join_group) = 0]
+        /// [GROUP BY join_group HAVING makeDuplicateSeriesCheck(values, join_group)]
         ///
         bool metric_name_dropped_from_join_group = false;
 
@@ -139,6 +140,10 @@ namespace
             /// If `join_group` is the same as `group` then we already know it's unique.
             bool check_side_one = !group_on_side && (tryGetIdentifierName(join_group.get()) != ColumnNames::Group);
 
+            /// Rows with the same `join_group` are merged unless step 3 takes labels from their `original_group`.
+            bool merge_side_one = extra_labels.empty()
+                && ((side != left) || group_right || drop_metric_name || left_argument.metric_name_dropped);
+
             /// We add column `original_group` because we may need it at step 3.
             ASTPtr original_group = make_intrusive<ASTIdentifier>(ColumnNames::Group);
             if (check_side_one)
@@ -149,10 +154,11 @@ namespace
             builder.select_list.push_back(join_group);
             builder.select_list.back()->setAlias(ColumnNames::JoinGroup);
 
+            ASTPtr side_values = make_intrusive<ASTIdentifier>(Strings{side, ColumnNames::Values});
             ASTPtr values = make_intrusive<ASTIdentifier>(ColumnNames::Values);
             if (check_side_one)
             {
-                values = makeASTFunction("any", std::move(values));
+                values = merge_side_one ? makeMergedValues(side_values) : makeASTFunction("any", std::move(values));
                 values->setAlias(ColumnNames::Values);
             }
             builder.select_list.push_back(std::move(values));
@@ -164,13 +170,26 @@ namespace
                 /// We throw an exception if there are multiple matches on the side "one".
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::JoinGroup));
 
-                builder.having = makeASTFunction(
-                    "equals",
-                    makeASTFunction(
-                        "timeSeriesThrowDuplicateSeriesIf",
-                        makeASTFunction("greater", makeASTFunction("count"), make_intrusive<ASTLiteral>(1u)),
-                        make_intrusive<ASTIdentifier>(ColumnNames::JoinGroup)),
-                    make_intrusive<ASTLiteral>(0u));
+                if (merge_side_one)
+                {
+                    builder.having = makeDuplicateSeriesCheck(side_values, make_intrusive<ASTIdentifier>(ColumnNames::JoinGroup));
+                }
+                else
+                {
+                    /// A row without values matches nothing, so it can't be a duplicate.
+                    builder.where = makeASTFunction(
+                        "arrayExists",
+                        makeASTLambda({"x"}, makeASTFunction("isNotNull", make_intrusive<ASTIdentifier>("x"))),
+                        side_values);
+
+                    builder.having = makeASTFunction(
+                        "equals",
+                        makeASTFunction(
+                            "timeSeriesThrowDuplicateSeriesIf",
+                            makeASTFunction("greater", makeASTFunction("count"), make_intrusive<ASTLiteral>(1u)),
+                            make_intrusive<ASTIdentifier>(ColumnNames::JoinGroup)),
+                        make_intrusive<ASTLiteral>(0u));
+                }
             }
 
             ASTPtr ast = builder.getSelectQuery();
@@ -185,14 +204,14 @@ namespace
         ///        arrayMap(x, y -> f(x, y), left.values, right.values) AS values
         /// FROM left INNER ANY JOIN right
         /// ON left.join_group = right.join_group
-        /// [GROUP BY group HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, group) = 0]
+        /// [GROUP BY group HAVING makeDuplicateSeriesCheck(<values>, group)]
         ///
         /// if with group_left/group_right:
         /// SELECT timeSeriesCopyTags(timeSeriesRemoveTag(side_many.original_group, '__name__'), side_one.original_group, extra_labels) AS group,
         ///        arrayMap(x, y -> f(x, y), left.values, right.values) AS values
         /// FROM left LEFT/RIGHT SEMI JOIN right
         /// ON left.join_group = right.join_group
-        /// [GROUP BY group HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, group) = 0]
+        /// [GROUP BY group HAVING makeDuplicateSeriesCheck(<values>, group)]
         ///
         ASTPtr result_ast;
         bool metric_name_dropped_from_result = false;
@@ -335,7 +354,7 @@ namespace
             builder.select_list.push_back(std::move(new_group));
             builder.select_list.back()->setAlias(ColumnNames::Group);
 
-            ASTPtr values = makeASTFunction(
+            ASTPtr row_values = makeASTFunction(
                 "arrayMap",
                 makeASTFunction(
                     "lambda",
@@ -344,8 +363,9 @@ namespace
                 make_intrusive<ASTIdentifier>(Strings{left, ColumnNames::Values}),
                 make_intrusive<ASTIdentifier>(Strings{right, ColumnNames::Values}));
 
+            ASTPtr values = row_values;
             if (check_no_duplicate_groups)
-                values = makeASTFunction("any", std::move(values));
+                values = makeMergedValues(row_values);
 
             builder.select_list.push_back(std::move(values));
             builder.select_list.back()->setAlias(ColumnNames::Values);
@@ -365,13 +385,7 @@ namespace
             {
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Group));
 
-                builder.having = makeASTFunction(
-                    "equals",
-                    makeASTFunction(
-                        "timeSeriesThrowDuplicateSeriesIf",
-                        makeASTFunction("greater", makeASTFunction("count"), make_intrusive<ASTLiteral>(1u)),
-                        make_intrusive<ASTIdentifier>(ColumnNames::Group)),
-                    make_intrusive<ASTLiteral>(0u));
+                builder.having = makeDuplicateSeriesCheck(row_values, make_intrusive<ASTIdentifier>(ColumnNames::Group));
             }
 
             result_ast = builder.getSelectQuery();
