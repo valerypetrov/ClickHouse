@@ -1051,6 +1051,9 @@ The _histograms_ table must have columns:
 | `positive_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the positive buckets of an integer histogram, empty for a float one |
 | `negative_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the negative buckets of an integer histogram, empty for a float one |
 
+When the engine creates these columns itself, `timestamp` gets `CODEC(Delta, T64, ZSTD(3))`
+and the `Float64` and `UInt64` columns get `CODEC(Delta, Default)`.
+
 A table with this target gets an additional outer `histograms` column of type `Array(Tuple(...))` carrying
 one tuple per histogram sample with the same elements as the table columns after `id`, and the stored
 histograms can be read back with the [timeSeriesHistograms](#functions) table function.

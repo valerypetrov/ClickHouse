@@ -8,22 +8,22 @@ Array(Tuple(timestamp DateTime64(3), flags UInt8, schema Int8, zero_threshold Fl
 1
 -- the inner histograms table schema
 id	Tuple(UInt64, LowCardinality(UUID))
-timestamp	DateTime64(3) CODEC(DoubleDelta, ZSTD(1))
+timestamp	DateTime64(3) CODEC(Delta(8), T64, ZSTD(3))
 flags	UInt8
 schema	Int8
-zero_threshold	Float64
-count	Float64
-sum	Float64
-zero_count	Float64
+zero_threshold	Float64 CODEC(Delta(8), Default)
+count	Float64 CODEC(Delta(8), Default)
+sum	Float64 CODEC(Delta(8), Default)
+zero_count	Float64 CODEC(Delta(8), Default)
 positive_spans	Array(Tuple(offset Int32, length UInt32))
-positive_values	Array(Float64)
+positive_values	Array(Float64) CODEC(Delta(8), Default)
 negative_spans	Array(Tuple(offset Int32, length UInt32))
-negative_values	Array(Float64)
-custom_values	Array(Float64)
-count_int	UInt64
-zero_count_int	UInt64
-positive_values_int	Array(UInt64)
-negative_values_int	Array(UInt64)
+negative_values	Array(Float64) CODEC(Delta(8), Default)
+custom_values	Array(Float64) CODEC(Delta(8), Default)
+count_int	UInt64 CODEC(Delta(8), Default)
+zero_count_int	UInt64 CODEC(Delta(8), Default)
+positive_values_int	Array(UInt64) CODEC(Delta(8), Default)
+negative_values_int	Array(UInt64) CODEC(Delta(8), Default)
 MergeTree	id, timestamp
 0
 -- INSERT through the outer histograms column, read back via timeSeriesHistograms()

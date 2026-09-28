@@ -122,6 +122,17 @@ namespace
         return settings[TimeSeriesSetting::store_native_histograms];
     }
 
+    /// The codec of a generated Float64 or UInt64 payload column of the "histograms" table, nullptr for the other columns.
+    /// `Default` keeps the size-aware default: fast `LZ4` for small parts, `ZSTD(3)` for big merged ones.
+    ASTPtr makeHistogramPayloadCodec(const IDataType & type)
+    {
+        const auto * array_type = typeid_cast<const DataTypeArray *>(&type);
+        WhichDataType which{array_type ? *array_type->getNestedType() : type};
+        if (!which.isFloat64() && !which.isUInt64())
+            return nullptr;
+        return makeASTFunction("CODEC", make_intrusive<ASTIdentifier>("Delta"), make_intrusive<ASTIdentifier>("Default"));
+    }
+
     /// Returns the name of the column with the name of a metric family in the "metric families" table used by the versions
     /// of TimeSeries tables other than `version` (see `TimeSeriesColumnNames::getInnerMetricFamily`).
     const char * getInnerMetricFamilyOfOtherVersions(UInt64 version)
@@ -692,16 +703,17 @@ namespace
                 {
                     if (!is_timestamp_type(*type))
                         return false;
-                    return !codec || (codec->formatWithSecretsOneLine() == "CODEC(DoubleDelta, ZSTD(1))");
+                    return !codec || (codec->formatWithSecretsOneLine() == "CODEC(Delta, T64, ZSTD(3))");
                 }
-
-                if (codec)
-                    return false;
 
                 for (const auto & payload_column : getTimeSeriesHistogramPayloadColumns())
                 {
-                    if (name == payload_column.name)
-                        return type_name == payload_column.type->getName();
+                    if (name != payload_column.name)
+                        continue;
+                    if (type_name != payload_column.type->getName())
+                        return false;
+                    auto generated_codec = makeHistogramPayloadCodec(*payload_column.type);
+                    return !codec || (generated_codec && codec->formatWithSecretsOneLine() == generated_codec->formatWithSecretsOneLine());
                 }
 
                 return false;
@@ -1167,13 +1179,20 @@ namespace
             {
                 add_column_if_missing(TimeSeriesColumnNames::ID, dataTypeToAST(resolved_types.id_type));
 
-                /// Same codec rationale as the samples table's `timestamp` column above.
+                /// The same codec as the samples table's `timestamp` column above.
                 if (auto * timestamp_decl = add_column_if_missing(TimeSeriesColumnNames::Timestamp, dataTypeToAST(resolved_types.timestamp_type)))
                     timestamp_decl->setCodec(makeASTFunction(
-                        "CODEC", make_intrusive<ASTIdentifier>("DoubleDelta"), makeASTFunction("ZSTD", make_intrusive<ASTLiteral>(UInt64{1}))));
+                        "CODEC",
+                        make_intrusive<ASTIdentifier>("Delta"),
+                        make_intrusive<ASTIdentifier>("T64"),
+                        makeASTFunction("ZSTD", make_intrusive<ASTLiteral>(UInt64{3}))));
 
                 for (const auto & [name, type] : getTimeSeriesHistogramPayloadColumns())
-                    add_column_if_missing(name, dataTypeToAST(type));
+                {
+                    auto * decl = add_column_if_missing(name, dataTypeToAST(type));
+                    if (auto codec = makeHistogramPayloadCodec(*type); decl && codec)
+                        decl->setCodec(std::move(codec));
+                }
 
                 break;
             }
