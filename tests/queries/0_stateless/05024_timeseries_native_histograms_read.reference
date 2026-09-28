@@ -16,5 +16,13 @@ test_histogram_seconds	{'__name__':'test_histogram_seconds','job':'test'}	[]	[('
 2024-01-01 00:00:02.000	1	-53	0	6.5	12.25	0	[(0,2)]	[4.5,2]	[]	[]	[0.1,0.5]	0	0	[]	[]
 1
 2024-01-01 00:00:01.000	2024-01-01 00:00:02.000
+-- samples and histograms are joined by id whichever data table is bigger, series without data included
+test_gauge	1	0
+test_histogram_seconds	0	2
+test_no_data	0	0
+test_gauge	1	0
+test_gauge_long	1000	0
+test_histogram_seconds	0	2
+test_no_data	0	0
 -- a table without the histograms target has no histograms column
 0

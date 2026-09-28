@@ -40,6 +40,13 @@ SELECT timestamp, flags, schema, zero_threshold, count, sum, zero_count, positiv
 SELECT count() FROM timeSeriesSamples(ts_dst);
 SELECT min(min_time), max(max_time) FROM timeSeriesTags(ts_dst) WHERE metric_name = 'test_histogram_seconds';
 
+SELECT '-- samples and histograms are joined by id whichever data table is bigger, series without data included';
+INSERT INTO ts_src (metric_name, tags, samples) VALUES ('test_no_data', map('job', 'test'), []);
+SELECT metric_name, length(samples), length(histograms) FROM ts_src ORDER BY metric_name;
+INSERT INTO ts_src (metric_name, tags, samples)
+    SELECT 'test_gauge_long', map('job', 'test'), arrayMap(i -> (toDateTime64('2024-01-01 00:00:00', 3) + i, i), range(1000));
+SELECT metric_name, length(samples), length(histograms) FROM ts_src ORDER BY metric_name;
+
 SELECT '-- a table without the histograms target has no histograms column';
 CREATE TABLE ts_plain ENGINE = TimeSeries;
 SELECT histograms FROM ts_plain; -- { serverError UNKNOWN_IDENTIFIER }

@@ -488,12 +488,12 @@ namespace
         return select_list;
     }
 
-    /// Turns a FROM element into `<kind> ANY JOIN <element> USING id`.
-    ASTPtr makeJoinByIdElement(ASTPtr table_elem, JoinKind kind)
+    /// Turns a FROM element into `<kind> <strictness> JOIN <element> USING id`.
+    ASTPtr makeJoinByIdElement(ASTPtr table_elem, JoinKind kind, JoinStrictness strictness = JoinStrictness::Any)
     {
         auto join = make_intrusive<ASTTableJoin>();
         join->kind = kind;
-        join->strictness = JoinStrictness::Any;
+        join->strictness = strictness;
         auto using_list = make_intrusive<ASTExpressionList>();
         using_list->children.push_back(make_intrusive<ASTIdentifier>(TimeSeriesColumnNames::ID));
         join->using_expression_list = using_list;
@@ -696,8 +696,8 @@ namespace
     /// The "samples" subquery, when read, anchors the query (the aggregated samples stream through the joins
     /// as the probe side); when the "samples" table is not read the query anchors on the "tags" table.
     /// The "histograms" table is read the same way as the "samples" table (a `__histograms` subquery grouped by id
-    /// producing the `histograms` column); when both are read the query anchors on the "tags" table and
-    /// LEFT-joins each of them, so a series with only one kind of samples gets an empty array for the other kind.
+    /// producing the `histograms` column); when both are read the bigger one anchors the query, RIGHT-joins "tags" and
+    /// LEFT-joins the other one, so a series with only one kind of samples gets an empty array for the other kind.
     /// The "tags" table is always read — it bridges "samples"/"histograms" (joined by id) and "metric families"
     /// (joined by matching metric_name against the expanded member names).
     ASTPtr buildSelectQueryFromMultipleTables(
@@ -711,7 +711,8 @@ namespace
         const NameSet & requested_tags,
         const std::unordered_map<String, String> & columns_by_tags,
         const NameAndTypePair & samples_outer_column_name_and_type,
-        bool deduplicate_tags_by_id)
+        bool deduplicate_tags_by_id,
+        bool stream_histograms)
     {
         auto select_query = make_intrusive<ASTSelectQuery>();
         select_query->setExpression(ASTSelectQuery::Expression::SELECT,
@@ -720,12 +721,16 @@ namespace
         auto tables = make_intrusive<ASTTablesInSelectQuery>();
         if (samples_table_id && histograms_table_id)
         {
-            /// Tags-anchored: neither data table can be the probe side without dropping the series of the other.
-            tables->children.push_back(makeTagsTableElement(tags_table_id, deduplicate_tags_by_id));
+            /// The streamed table is the probe side, only the other one is held in a hash table. The RIGHT JOIN keeps
+            /// the series without rows in the streamed table; ALL, as its ids are unique, also works with `partial_merge`.
+            ASTPtr streamed = makeSamplesTableElement(*samples_table_id, samples_outer_column_name_and_type);
+            ASTPtr built = makeHistogramsTableElement(*histograms_table_id, histograms_type);
+            if (stream_histograms)
+                std::swap(streamed, built);
+            tables->children.push_back(std::move(streamed));
             tables->children.push_back(
-                makeJoinByIdElement(makeSamplesTableElement(*samples_table_id, samples_outer_column_name_and_type), JoinKind::Left));
-            tables->children.push_back(
-                makeJoinByIdElement(makeHistogramsTableElement(*histograms_table_id, histograms_type), JoinKind::Left));
+                makeJoinByIdElement(makeTagsTableElement(tags_table_id, deduplicate_tags_by_id), JoinKind::Right, JoinStrictness::All));
+            tables->children.push_back(makeJoinByIdElement(std::move(built), JoinKind::Left));
         }
         else if (samples_table_id)
         {
@@ -825,6 +830,16 @@ ASTPtr makeASTSelectFromTimeSeries(
 
     const char * metric_family_column_name = TimeSeriesColumnNames::getInnerMetricFamily(storage.getVersion());
 
+    /// When both data tables are read, the bigger one (by uncompressed bytes) is streamed and the other one is held in memory.
+    bool stream_histograms = false;
+    if (need_samples && need_histograms)
+    {
+        const auto & settings = context->getSettingsRef();
+        auto samples_bytes = storage.getTargetTable(ViewTarget::Samples, context)->totalBytesUncompressed(settings);
+        auto histograms_bytes = storage.getTargetTable(ViewTarget::Histograms, context)->totalBytesUncompressed(settings);
+        stream_histograms = samples_bytes && histograms_bytes && *histograms_bytes > *samples_bytes;
+    }
+
     /// Single-table reads (no join).
     if (need_samples && !need_histograms && !need_tags && !need_metric_families)
         return buildSelectQueryFromDataTableOnly(
@@ -845,7 +860,8 @@ ASTPtr makeASTSelectFromTimeSeries(
     chassert(need_tags);
     return buildSelectQueryFromMultipleTables(*tags_table_id, samples_table_id, histograms_table_id, histograms_type,
                                               metric_families_table_id, metric_family_column_name, requested_columns, requested_tags,
-                                              columns_by_tags, samples_outer_column_name_and_type, deduplicate_tags_by_id);
+                                              columns_by_tags, samples_outer_column_name_and_type, deduplicate_tags_by_id,
+                                              stream_histograms);
 }
 
 SettingsChanges getSettingsForSelectFromTimeSeries()
