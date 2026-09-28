@@ -207,14 +207,13 @@ namespace
         }
     }
 
-    /// Fills the columns of the "histograms" table: `id` plus every element of the histograms tuple.
-    void fillHistogramsColumns(
+    /// Fills the `id` column of the "histograms" table, one `id` per histogram.
+    /// Rows filtered out must have no histograms, so the other columns are the tuple's own columns.
+    void fillHistogramsIdColumn(
         const PaddedPODArray<UInt8> & filter,
         const IColumn & id_column,
-        const ColumnTuple & hist_tuples,
         const ColumnArray::Offsets & hist_offsets,
-        IColumn & out_id_column,
-        MutableColumns & out_columns)
+        IColumn & out_id_column)
     {
         size_t id_index = 0;
         for (size_t i = 0; i < filter.size(); ++i)
@@ -231,11 +230,7 @@ namespace
             }
 
             if (num_histograms > 0)
-            {
                 out_id_column.insertManyFrom(id_column, id_index, num_histograms);
-                for (size_t j = 0; j != out_columns.size(); ++j)
-                    out_columns[j]->insertRangeFrom(hist_tuples.getColumn(j), hist_start, num_histograms);
-            }
 
             ++id_index;
         }
@@ -875,19 +870,7 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
         auto histograms_id_column = id_type->createColumn();
         histograms_id_column->reserve(total_histograms);
 
-        MutableColumns histogram_columns;
-        histogram_columns.reserve(hist_tuples->tupleSize());
-        for (size_t i = 0; i != hist_tuples->tupleSize(); ++i)
-        {
-            auto column = hist_tuples->getColumn(i).cloneEmpty();
-            column->reserve(total_histograms);
-            histogram_columns.push_back(std::move(column));
-        }
-
-        fillHistogramsColumns(
-            filter,
-            *id_column, *hist_tuples, hist_arrays->getOffsets(),
-            *histograms_id_column, histogram_columns);
+        fillHistogramsIdColumn(filter, *id_column, hist_arrays->getOffsets(), *histograms_id_column);
 
         const auto & histograms_col_type = block.getByName(TimeSeriesColumnNames::Histograms).type;
         const auto & histograms_tuple_type = assert_cast<const DataTypeTuple &>(
@@ -896,9 +879,9 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
 
         Block histograms_block;
         histograms_block.insert(ColumnWithTypeAndName{std::move(histograms_id_column), id_type, TimeSeriesColumnNames::ID});
-        for (size_t i = 0; i != histogram_columns.size(); ++i)
+        for (size_t i = 0; i != hist_tuples->tupleSize(); ++i)
             histograms_block.insert(ColumnWithTypeAndName{
-                std::move(histogram_columns[i]), histograms_tuple_type.getElement(i), element_names[i]});
+                hist_tuples->getColumnPtr(i), histograms_tuple_type.getElement(i), element_names[i]});
 
         histograms_pipeline->push(std::move(histograms_block));
     }
