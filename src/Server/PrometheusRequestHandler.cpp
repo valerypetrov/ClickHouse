@@ -327,7 +327,9 @@ public:
         auto table = DatabaseCatalog::instance().getTable(getTimeSeriesTableID(), context);
         PrometheusRemoteWriteProtocol protocol{table, context};
 
-        prometheus::WriteRequest write_request;
+        /// An arena saves an allocation and a free per message: a request holds many small ones.
+        google::protobuf::Arena arena;
+        auto & write_request = *google::protobuf::Arena::Create<prometheus::WriteRequest>(&arena);
 
         {
             ProtobufZeroCopyInputStreamFromReadBuffer zero_copy_input_stream{std::move(decompressing_buf)};
