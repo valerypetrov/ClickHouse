@@ -35,12 +35,8 @@ namespace TimeSeriesHistogramsTupleIndex
     constexpr size_t NegativeValues = 10;
     constexpr size_t CustomValues = 11;
 
-    /// Exact carriers of the counts of an integer-flavor histogram (see TimeSeriesColumnNames):
-    /// `Float64` represents integers only up to 2^53 exactly, so when the `flags` bit 0 is clear
-    /// (an integer histogram) its count, zero count and decoded bucket counts are also stored here,
-    /// verbatim, which makes such a histogram round-trip losslessly. The corresponding Float64
-    /// columns stay populated with rounded copies, so readers unaware of these elements keep working.
-    /// Always zero/empty for float-flavor histograms.
+    /// Exact copies of an integer histogram's counts above 2^53, where Float64 is inexact (see TimeSeriesColumnNames).
+    /// Zero or empty when the Float64 counterpart is exact; the Float64 elements are always filled.
     constexpr size_t CountInt = 12;
     constexpr size_t ZeroCountInt = 13;
     constexpr size_t PositiveValuesInt = 14;

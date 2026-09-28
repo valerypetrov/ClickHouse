@@ -44,9 +44,9 @@ struct TimeSeriesColumnNames
     static constexpr const char * CustomValues = "custom_values";
 
     /// Exact integer carriers of the counts of an integer-flavor histogram (the `flags` bit 0 is clear):
-    /// `Float64` cannot hold integers above 2^53 exactly, so the values arrived as unsigned integers
+    /// `Float64` cannot hold integers above 2^53 exactly, so such values arrived as unsigned integers
     /// are also stored verbatim here, which makes such a histogram round-trip losslessly.
-    /// Always zero/empty for float-flavor histograms.
+    /// Zero/empty when the Float64 counterpart is exact, and always for float-flavor histograms.
     static constexpr const char * CountInt = "count_int";
     static constexpr const char * ZeroCountInt = "zero_count_int";
     static constexpr const char * PositiveValuesInt = "positive_values_int";

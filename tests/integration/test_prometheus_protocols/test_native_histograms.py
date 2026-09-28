@@ -65,6 +65,15 @@ HISTOGRAM_COLUMNS = (
 )
 
 
+# The exact counts of an integer histogram: an empty or zero carrier means the Float64 copy is exact.
+EXACT_COUNTS = (
+    "if(count_int != 0, count_int, toUInt64(count)),"
+    " if(zero_count_int != 0, zero_count_int, toUInt64(zero_count)),"
+    " if(notEmpty(positive_values_int), positive_values_int, arrayMap(x -> toUInt64(x), positive_values)),"
+    " if(notEmpty(negative_values_int), negative_values_int, arrayMap(x -> toUInt64(x), negative_values))"
+)
+
+
 def query_histograms(columns=HISTOGRAM_COLUMNS):
     return node.query(
         f"SELECT {columns} FROM timeSeriesHistograms(prometheus) ORDER BY timestamp"
@@ -114,10 +123,10 @@ def test_int_histogram():
                 "[(-1,1)]",
                 "[2]",
                 "[]",
-                "10",
-                "2",
-                "[3,2,3]",
-                "[2]",
+                "0",
+                "0",
+                "[]",
+                "[]",
             ]
         ]
     )
@@ -209,9 +218,9 @@ def test_float_histogram_and_nhcb():
                 "[]",
                 "[]",
                 "[0.1,0.5,1]",
-                "7",
                 "0",
-                "[2,3,4]",
+                "0",
+                "[]",
                 "[]",
             ],
         ]
@@ -542,8 +551,7 @@ def test_int_histogram_lossless_round_trip():
     send(make_write_request({"__name__": "test_hist_big_int"}, [histogram]))
 
     assert node.query(
-        "SELECT count_int, zero_count_int, positive_values_int, negative_values_int"
-        " FROM timeSeriesHistograms(prometheus)"
+        f"SELECT {EXACT_COUNTS} FROM timeSeriesHistograms(prometheus)"
     ) == TSV(
         [
             [
@@ -589,11 +597,10 @@ def test_int_histogram_exact_round_trip_at_float64_boundary():
     )
 
     assert node.query(
-        "SELECT count_int, zero_count_int, positive_values_int"
-        " FROM timeSeriesHistograms(prometheus) ORDER BY timestamp"
+        f"SELECT {EXACT_COUNTS} FROM timeSeriesHistograms(prometheus) ORDER BY timestamp"
     ) == TSV(
         [
-            [str(big), "1", f"[{big - 1}]"],
-            [str(2 * big), str(big), f"[{big}]"],
+            [str(big), "1", f"[{big - 1}]", "[]"],
+            [str(2 * big), str(big), f"[{big}]", "[]"],
         ]
     )

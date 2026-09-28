@@ -1046,10 +1046,10 @@ The _histograms_ table must have columns:
 | `negative_spans` | [x] | `Array(Tuple(offset Int32, length UInt32))` | same | Spans of the negative buckets |
 | `negative_values` | [x] | `Array(Float64)` | `Array(Float64)` | Absolute counts of the negative buckets (deltas are decoded on ingestion) |
 | `custom_values` | [x] | `Array(Float64)` | `Array(Float64)` | Custom bucket boundaries (only used with `schema` = -53) |
-| `count_int` | [x] | `UInt64` | `UInt64` | Exact count of observations of an integer histogram, always 0 for a float one |
-| `zero_count_int` | [x] | `UInt64` | `UInt64` | Exact zero-bucket count of an integer histogram, always 0 for a float one |
-| `positive_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the positive buckets of an integer histogram, empty for a float one |
-| `negative_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the negative buckets of an integer histogram, empty for a float one |
+| `count_int` | [x] | `UInt64` | `UInt64` | Exact count of observations of an integer histogram when it is above 2^53, otherwise 0 |
+| `zero_count_int` | [x] | `UInt64` | `UInt64` | Exact zero-bucket count of an integer histogram when it is above 2^53, otherwise 0 |
+| `positive_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the positive buckets of an integer histogram when one of them is above 2^53, otherwise empty |
+| `negative_values_int` | [x] | `Array(UInt64)` | `Array(UInt64)` | Exact absolute counts of the negative buckets of an integer histogram when one of them is above 2^53, otherwise empty |
 
 When the engine creates these columns itself, `timestamp` gets `CODEC(Delta, T64, ZSTD(3))`
 and the `Float64` and `UInt64` columns get `CODEC(Delta, Default)`.
@@ -1059,9 +1059,9 @@ one tuple per histogram sample with the same elements as the table columns after
 histograms can be read back with the [timeSeriesHistograms](#functions) table function.
 
 The `flags` bit records whether a sample arrived as an integer or a float histogram. Counts are stored as
-`Float64`, which represents every integer up to 2^53 exactly; the counts of an integer histogram are also
+`Float64`, which represents every integer up to 2^53 exactly; the counts of an integer histogram above 2^53 are also
 stored verbatim in the `count_int`, `zero_count_int`, `positive_values_int`, and `negative_values_int`
-columns, so it round-trips without losing precision even above 2^53.
+columns, so it round-trips without losing precision. A zero or empty exact column means its `Float64` counterpart is exact.
 
 ## Creation {#creation}
 

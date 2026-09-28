@@ -102,11 +102,13 @@ size_t getTotalSpanLength(const google::protobuf::RepeatedPtrField<prometheus::B
     return total;
 }
 
+/// Integers up to 2^53 are exact in Float64, so only larger counts need their exact UInt64 carriers.
+constexpr UInt64 MAX_EXACT_FLOAT64_INTEGER = 1ULL << 53;
+
 /// Appends decoded bucket values (absolute counts) of one direction of a native histogram.
 /// Int histograms carry deltas which are decoded to absolutes here; float histograms carry absolutes.
-/// The absolute counts are also appended verbatim to `out_int_values`, which provides an exact
-/// carrier for integers above 2^53 (where Float64 loses precision); that column stays empty
-/// for the rows of float histograms, whose counts are fractional by design.
+/// The absolute counts are also appended verbatim to `out_int_values` when one of them is above 2^53
+/// (where Float64 loses precision); otherwise, and for float histograms, that array stays empty.
 void appendHistogramBuckets(
     const google::protobuf::RepeatedPtrField<prometheus::BucketSpan> & spans,
     const google::protobuf::RepeatedField<Int64> & deltas,
@@ -152,6 +154,8 @@ void appendHistogramBuckets(
     }
     else
     {
+        size_t int_values_size = out_int_values.size();
+        bool has_inexact_value = false;
         Int64 running = 0;
         for (Int64 delta : deltas)
         {
@@ -165,7 +169,10 @@ void appendHistogramBuckets(
                     "Native histogram has a negative {} bucket count after delta decoding: {}", what, running);
             out_values.insertValue(static_cast<Float64>(running));
             out_int_values.insertValue(static_cast<UInt64>(running));
+            has_inexact_value |= static_cast<UInt64>(running) > MAX_EXACT_FLOAT64_INTEGER;
         }
+        if (!has_inexact_value)
+            out_int_values.getData().resize(int_values_size);
     }
     out_values_offsets.insertValue(out_values.size());
     out_int_values_offsets.insertValue(out_int_values.size());
@@ -281,9 +288,9 @@ ColumnPtr makeHistogramsColumn(
             sums->insertValue(sum);
             zero_counts->insertValue(zero_count);
 
-            /// The exact carriers stay zero/empty for float histograms: their counts are not integers.
-            counts_int->insertValue(is_float ? 0 : histogram.count_int());
-            zero_counts_int->insertValue(is_float ? 0 : histogram.zero_count_int());
+            /// The exact carriers stay zero for float histograms (the int arms are unset) and for exact counts.
+            counts_int->insertValue(histogram.count_int() > MAX_EXACT_FLOAT64_INTEGER ? histogram.count_int() : 0);
+            zero_counts_int->insertValue(histogram.zero_count_int() > MAX_EXACT_FLOAT64_INTEGER ? histogram.zero_count_int() : 0);
 
             appendHistogramBuckets(
                 histogram.positive_spans(), histogram.positive_deltas(), histogram.positive_counts(), is_float, is_stale_marker, "positive",
