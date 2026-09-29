@@ -56,6 +56,10 @@ cluster="test_shard_localhost"
 # every build, so a literal tuple fails type analysis before the access check this test is about.
 txn_predicate="tid_hash = 0"
 task_uuid="'00000000-0000-0000-0000-000000000000'"
+# `system.part_moves_between_shards` reads the state of every replicated table the user can see, so a
+# table of a concurrent test that is still being created fails the query with a Keeper `No node` error.
+# Restrict the read to this test's database, which has no replicated table.
+move_predicate="database = '$CLICKHOUSE_DATABASE' AND task_uuid = $task_uuid"
 
 # Report the privilege the server asked for and let the reference hold the expected mapping. The
 # privilege name is what discriminates: an ACCESS_DENIED-only assertion would also pass when the
@@ -70,7 +74,7 @@ while IFS= read -r statement; do
     echo "${statement%% ON CLUSTER*} -> $(required_privilege "$cluster_user" "$statement")"
 done <<EOF
 KILL TRANSACTION ON CLUSTER $cluster WHERE $txn_predicate
-KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE task_uuid = $task_uuid
+KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE $move_predicate
 SYSTEM STOP THREAD FUZZER ON CLUSTER $cluster
 SYSTEM START THREAD FUZZER ON CLUSTER $cluster
 SYSTEM RESET COVERAGE ON CLUSTER $cluster
@@ -83,7 +87,7 @@ EOF
 # there is no row here, while the initiator cannot know the target tables and so requires them
 # globally. That is stronger in scope than the local check, never weaker.
 echo "KILL TRANSACTION without system.transactions -> $(required_privilege "$partial_txn_user" "KILL TRANSACTION ON CLUSTER $cluster WHERE $txn_predicate")"
-echo "KILL PART_MOVE_TO_SHARD without move privileges -> $(required_privilege "$partial_move_user" "KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE task_uuid = $task_uuid")"
+echo "KILL PART_MOVE_TO_SHARD without move privileges -> $(required_privilege "$partial_move_user" "KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE $move_predicate")"
 
 # In-range control: holding the statement privileges without CLUSTER is refused by the earlier check,
 # so a mapping that refuses everything would not produce the five lines above.
@@ -107,5 +111,5 @@ allowed() {
 
 allowed "$kill_txn_user" "KILL TRANSACTION WHERE $txn_predicate" "KILL TRANSACTION local"
 allowed "$kill_txn_user" "KILL TRANSACTION ON CLUSTER $cluster WHERE $txn_predicate" "KILL TRANSACTION on cluster"
-allowed "$move_user" "KILL PART_MOVE_TO_SHARD WHERE task_uuid = $task_uuid" "KILL PART_MOVE_TO_SHARD local"
-allowed "$move_user" "KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE task_uuid = $task_uuid" "KILL PART_MOVE_TO_SHARD on cluster"
+allowed "$move_user" "KILL PART_MOVE_TO_SHARD WHERE $move_predicate" "KILL PART_MOVE_TO_SHARD local"
+allowed "$move_user" "KILL PART_MOVE_TO_SHARD ON CLUSTER $cluster WHERE $move_predicate" "KILL PART_MOVE_TO_SHARD on cluster"
