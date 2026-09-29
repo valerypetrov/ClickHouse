@@ -72,6 +72,9 @@ namespace Setting
     extern const SettingsUInt64 max_bytes_to_read;
     extern const SettingsUInt64 max_bytes_to_read_leaf;
     extern const SettingsUInt64 max_bytes_to_sort;
+    extern const SettingsSeconds max_estimated_execution_time;
+    extern const SettingsUInt64 max_execution_speed;
+    extern const SettingsUInt64 max_execution_speed_bytes;
     extern const SettingsSeconds max_execution_time;
     extern const SettingsUInt64 max_result_bytes;
     extern const SettingsUInt64 max_result_rows;
@@ -80,6 +83,8 @@ namespace Setting
     extern const SettingsUInt64 max_rows_to_read;
     extern const SettingsUInt64 max_rows_to_read_leaf;
     extern const SettingsUInt64 max_rows_to_sort;
+    extern const SettingsUInt64 min_execution_speed;
+    extern const SettingsUInt64 min_execution_speed_bytes;
     extern const SettingsDouble offset;
     extern const SettingsString order;
     extern const SettingsSeconds promql_range_query_cache_min_age;
@@ -347,12 +352,15 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
             || settings[Setting::limit] != 0 || settings[Setting::offset] != 0
             || !settings[Setting::select].value.empty() || !settings[Setting::order].value.empty()
             || !settings[Setting::sort].value.empty() || !settings[Setting::filter].value.empty();
-        /// A GROUP BY, sorting or JOIN limit would see one chunk at a time, and a read limit of the whole query would
+        /// A GROUP BY, sorting or JOIN limit would see one chunk at a time, and a read or speed limit of the whole query would
         /// start again for each chunk, so they don't let the query be split either.
         const bool has_whole_query_limits = settings[Setting::max_rows_to_group_by] || settings[Setting::max_rows_to_sort]
             || settings[Setting::max_bytes_to_sort] || settings[Setting::max_rows_in_join] || settings[Setting::max_bytes_in_join]
             || settings[Setting::max_rows_to_read] || settings[Setting::max_bytes_to_read]
-            || settings[Setting::max_rows_to_read_leaf] || settings[Setting::max_bytes_to_read_leaf];
+            || settings[Setting::max_rows_to_read_leaf] || settings[Setting::max_bytes_to_read_leaf]
+            || settings[Setting::min_execution_speed] || settings[Setting::min_execution_speed_bytes]
+            || settings[Setting::max_execution_speed] || settings[Setting::max_execution_speed_bytes]
+            || settings[Setting::max_estimated_execution_time].totalMicroseconds() != 0;
         if (split_interval > 0 && split_interval <= length && step > 0 && length / step < MAX_RANGE_QUERY_STEPS
             && !has_whole_result_settings && !has_whole_query_limits
             && getNextChunkStart(evaluation_settings, split_interval, evaluation_settings.start_time->value)
