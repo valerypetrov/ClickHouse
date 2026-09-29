@@ -26,6 +26,7 @@ struct ConverterContext
 
     const ResultType result_type;
     const NodeEvaluationRangeGetter node_range_getter;
+    const std::vector<PrometheusQueryTree::MatcherList> extra_filters;
     SQLSubqueries subqueries;
 
     ConverterContext(std::shared_ptr<const PrometheusQueryTree> promql_tree_,

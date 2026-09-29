@@ -180,6 +180,27 @@ String unescapePrometheusLabelName(const String & name)
     }
     return result;
 }
+
+/// Parses the value of a `match[]` or `extra_filters` parameter: an instant selector with at least one matcher.
+PrometheusQueryTree::MatcherList parseSelectorParam(std::string_view param_name, const String & param, UInt32 time_scale)
+{
+    PrometheusQueryTree selector;
+    String error_message;
+    if (!selector.tryParse(param, time_scale, &error_message))
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot parse the value {} of the '{}' parameter: {}",
+                        quoteString(param), param_name, error_message);
+
+    const auto * root = selector.getRoot();
+    if (!root || (root->node_type != PrometheusQueryTree::NodeType::InstantSelector))
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The value {} of the '{}' parameter is not an instant selector",
+                        quoteString(param), param_name);
+
+    const auto & matchers = typeid_cast<const PrometheusQueryTree::InstantSelector &>(*root).matchers;
+    if (matchers.empty())
+        throw Exception(ErrorCodes::BAD_ARGUMENTS, "The value {} of the '{}' parameter must contain at least one matcher",
+                        quoteString(param), param_name);
+    return matchers;
+}
 }
 
 PrometheusHTTPProtocolAPI::PrometheusHTTPProtocolAPI(ConstStoragePtr time_series_storage_, const ContextMutablePtr & context_)
@@ -191,6 +212,35 @@ PrometheusHTTPProtocolAPI::PrometheusHTTPProtocolAPI(ConstStoragePtr time_series
 }
 
 PrometheusHTTPProtocolAPI::~PrometheusHTTPProtocolAPI() = default;
+
+void PrometheusHTTPProtocolAPI::setExtraFilters(const Strings & extra_label_params, const Strings & extra_filters_params)
+{
+    /// Empty values are skipped like in VictoriaMetrics.
+    PrometheusQueryTree::MatcherList extra_labels;
+    for (const auto & param : extra_label_params)
+    {
+        if (param.empty())
+            continue;
+        size_t pos = param.find('=');
+        if (pos == String::npos || pos == 0)
+            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The value {} of the 'extra_label' parameter must have the format 'name=value'",
+                            quoteString(param));
+        extra_labels.push_back({param.substr(0, pos), param.substr(pos + 1), PrometheusQueryTree::MatcherType::EQ});
+    }
+
+    extra_filters.clear();
+    for (const auto & param : extra_filters_params)
+    {
+        if (param.empty())
+            continue;
+        auto matchers = parseSelectorParam("extra_filters", param, /* time_scale = */ 3);
+        matchers.insert(matchers.end(), extra_labels.begin(), extra_labels.end());
+        extra_filters.push_back(std::move(matchers));
+    }
+
+    if (extra_filters.empty() && !extra_labels.empty())
+        extra_filters.push_back(std::move(extra_labels));
+}
 
 void PrometheusHTTPProtocolAPI::executePromQLQuery(
     WriteBuffer & response,
@@ -239,6 +289,8 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
         evaluation_settings.end_time = parseTimeSeriesTimestamp(params.end_param, time_scale);
         evaluation_settings.step = parseTimeSeriesDuration(params.step_param, time_scale);
     }
+
+    evaluation_settings.extra_filters = extra_filters;
 
     PrometheusQueryToSQL::Converter converter{query_tree, evaluation_settings};
     auto sql_query = converter.getSQL();
@@ -556,28 +608,27 @@ ASTPtr PrometheusHTTPProtocolAPI::makeSeriesIDsQuery(
     union_query->union_mode = SelectUnionMode::UNION_ALL;
     auto list_of_selects = make_intrusive<ASTExpressionList>();
 
-    for (const auto & match_param : match_params)
+    auto add_select_ids = [&](const PrometheusQueryTree::MatcherList & matchers)
     {
-        PrometheusQueryTree selector;
-        String error_message;
-        if (!selector.tryParse(match_param, time_scale, &error_message))
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "Cannot parse the value {} of the 'match[]' parameter: {}",
-                            quoteString(match_param), error_message);
-
-        const auto * root = selector.getRoot();
-        if (!root || (root->node_type != PrometheusQueryTree::NodeType::InstantSelector))
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The value {} of the 'match[]' parameter is not an instant selector",
-                            quoteString(match_param));
-
-        const auto & matchers = typeid_cast<const PrometheusQueryTree::InstantSelector &>(*root).matchers;
-        if (matchers.empty())
-            throw Exception(ErrorCodes::BAD_ARGUMENTS, "The value {} of the 'match[]' parameter must contain at least one matcher",
-                            quoteString(match_param));
-
         auto select_ids_query = StorageTimeSeriesSelector::makeSelectIDsQuery(
             tags_table_id, *time_series_settings, table_timestamp_type, table_id_type, matchers, min_time, max_time, time_scale);
         const auto & select_ids = typeid_cast<const ASTSelectWithUnionQuery &>(*select_ids_query);
         list_of_selects->children.push_back(select_ids.list_of_selects->children.at(0));
+    };
+
+    for (const auto & match_param : match_params)
+    {
+        auto matchers = parseSelectorParam("match[]", match_param, time_scale);
+        if (extra_filters.empty())
+            add_select_ids(matchers);
+
+        /// Each selector is combined with each extra filter; the callers deduplicate the series.
+        for (const auto & extra_filter : extra_filters)
+        {
+            auto combined_matchers = matchers;
+            combined_matchers.insert(combined_matchers.end(), extra_filter.begin(), extra_filter.end());
+            add_select_ids(combined_matchers);
+        }
     }
 
     union_query->children.push_back(std::move(list_of_selects));
@@ -690,6 +741,13 @@ void PrometheusHTTPProtocolAPI::getMetadata(
     Int64 limit_per_metric,
     QueryFinishCallback query_finish_callback)
 {
+    /// Metric metadata isn't stored per series, so none of it is returned under the extra filters.
+    if (!extra_filters.empty())
+    {
+        writeString(R"({"status":"success","data":{}})", response);
+        return;
+    }
+
     const auto time_series_storage_id = time_series_storage->getStorageID();
 
     const char * metric_family_column_name = TimeSeriesColumnNames::getInnerMetricFamily(time_series_storage->getVersion());

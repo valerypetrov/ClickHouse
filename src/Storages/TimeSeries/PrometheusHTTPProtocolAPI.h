@@ -7,12 +7,12 @@
 #include <Interpreters/executeQuery.h>
 #include <Storages/IStorage_fwd.h>
 #include <Parsers/IAST_fwd.h>
+#include <Parsers/Prometheus/PrometheusQueryTree.h>
 #include <IO/WriteBuffer.h>
 
 namespace DB
 {
 class StorageTimeSeries;
-class PrometheusQueryTree;
 class PullingAsyncPipelineExecutor;
 enum class PrometheusQueryResultType;
 
@@ -23,6 +23,10 @@ class PrometheusHTTPProtocolAPI : public WithMutableContext
 public:
     PrometheusHTTPProtocolAPI(ConstStoragePtr time_series_storage_, const ContextMutablePtr & context_);
     ~PrometheusHTTPProtocolAPI();
+
+    /// Sets the VictoriaMetrics tenancy filters: every returned series must have all the `extra_label` labels (`name=value`)
+    /// and match at least one of the `extra_filters` selectors.
+    void setExtraFilters(const Strings & extra_label_params, const Strings & extra_filters_params);
 
     enum class Type
     {
@@ -127,6 +131,8 @@ private:
     void writeScalar(WriteBuffer & response, Float64 value);
 
     std::shared_ptr<const StorageTimeSeries> time_series_storage;
+    /// A series must match all the matchers of at least one of these lists, see PrometheusQueryEvaluationSettings::extra_filters.
+    std::vector<PrometheusQueryTree::MatcherList> extra_filters;
     FormatSettings format_settings;
     LoggerPtr log;
 };

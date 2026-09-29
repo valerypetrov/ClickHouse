@@ -3,6 +3,7 @@
 #include <Parsers/ASTFunction.h>
 #include <Parsers/ASTIdentifier.h>
 #include <Parsers/ASTLiteral.h>
+#include <Parsers/makeASTForLogicalFunction.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/NodeEvaluationRange.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
@@ -25,7 +26,40 @@ namespace
             make_intrusive<ASTLiteral>(STALE_NAN_BITS));
     }
 
-    SQLQueryPiece fromRangeSelector(std::string_view instant_selector_text,
+    /// Checks the tags of each series: it must match all the matchers of at least one extra filter, a missing tag being empty.
+    ASTPtr makeExtraFiltersCondition(const std::vector<PrometheusQueryTree::MatcherList> & extra_filters)
+    {
+        using MatcherType = PrometheusQueryTree::MatcherType;
+        ASTs alternatives;
+        for (const auto & matchers : extra_filters)
+        {
+            ASTs conditions;
+            for (const auto & matcher : matchers)
+            {
+                ASTPtr value = makeASTFunction(
+                    "ifNull",
+                    makeASTFunction(
+                        "timeSeriesExtractTag",
+                        make_intrusive<ASTIdentifier>(ColumnNames::Group),
+                        make_intrusive<ASTLiteral>(matcher.label_name)),
+                    make_intrusive<ASTLiteral>(String{}));
+
+                ASTPtr condition;
+                if ((matcher.matcher_type == MatcherType::RE) || (matcher.matcher_type == MatcherType::NRE))
+                    condition = makeASTFunction("match", std::move(value), make_intrusive<ASTLiteral>("^(?:" + matcher.label_value + ")$"));
+                else
+                    condition = makeASTFunction("equals", std::move(value), make_intrusive<ASTLiteral>(matcher.label_value));
+
+                if ((matcher.matcher_type == MatcherType::NE) || (matcher.matcher_type == MatcherType::NRE))
+                    condition = makeASTFunction("not", std::move(condition));
+                conditions.push_back(std::move(condition));
+            }
+            alternatives.push_back(makeASTForLogicalAnd(std::move(conditions)));
+        }
+        return makeASTForLogicalOr(std::move(alternatives));
+    }
+
+    SQLQueryPiece fromRangeSelector(const PrometheusQueryTree::InstantSelector * instant_selector,
                                     const Node * node,
                                     bool filter_stale_markers,
                                     ConverterContext & context)
@@ -52,11 +86,17 @@ namespace
         TimestampType min_time = node_range.start_time - node_range.window + 1;
         TimestampType max_time = node_range.end_time;
 
+        /// A single extra filter is added to the selector, several ones are checked below.
+        PrometheusQueryTree::InstantSelector selector;
+        selector.matchers = instant_selector->matchers;
+        if (context.extra_filters.size() == 1)
+            selector.matchers.insert(selector.matchers.end(), context.extra_filters[0].begin(), context.extra_filters[0].end());
+
         builder.from_table_function = makeASTFunction(
             "timeSeriesSelector",
             make_intrusive<ASTLiteral>(context.time_series_storage_id.getDatabaseName()),
             make_intrusive<ASTLiteral>(context.time_series_storage_id.getTableName()),
-            make_intrusive<ASTLiteral>(String{instant_selector_text}),
+            make_intrusive<ASTLiteral>(selector.toString(*context.promql_tree)),
             timeSeriesTimestampToAST(min_time, context.result_timestamp_type),
             timeSeriesTimestampToAST(max_time, context.result_timestamp_type));
 
@@ -67,6 +107,12 @@ namespace
             builder.where = makeASTFunction(
                 "not",
                 isStaleMarker(make_intrusive<ASTIdentifier>(ColumnNames::Value)));
+        }
+
+        if (context.extra_filters.size() > 1)
+        {
+            auto condition = makeExtraFiltersCondition(context.extra_filters);
+            builder.where = builder.where ? makeASTFunction("and", builder.where, condition) : condition;
         }
 
         res.select_query = builder.getSelectQuery();
@@ -145,9 +191,8 @@ namespace
 
 SQLQueryPiece fromSelector(const PrometheusQueryTree::InstantSelector * instant_selector_node, ConverterContext & context)
 {
-    auto instant_selector_text = instant_selector_node->toString(*context.promql_tree);
     auto range_selector = fromRangeSelector(
-        instant_selector_text, instant_selector_node, /* filter_stale_markers = */ false, context);
+        instant_selector_node, instant_selector_node, /* filter_stale_markers = */ false, context);
     auto vector_grid = applyFunctionOverRange(
         instant_selector_node, "last_over_time", {std::move(range_selector)}, context);
     return replaceStaleMarkersWithNulls(std::move(vector_grid), context);
@@ -156,9 +201,8 @@ SQLQueryPiece fromSelector(const PrometheusQueryTree::InstantSelector * instant_
 
 SQLQueryPiece fromSelector(const PrometheusQueryTree::RangeSelector * range_selector_node, ConverterContext & context)
 {
-    auto instant_selector_text = range_selector_node->getInstantSelector()->toString(*context.promql_tree);
     return fromRangeSelector(
-        instant_selector_text, range_selector_node, /* filter_stale_markers = */ true, context);
+        range_selector_node->getInstantSelector(), range_selector_node, /* filter_stale_markers = */ true, context);
 }
 
 }

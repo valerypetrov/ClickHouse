@@ -469,8 +469,22 @@ public:
 
         /// Some parameters (default_format, everything used in the code above) do not belong to the
         /// Settings class. `limit` is defined by Prometheus on these endpoints, so it must not fall through to the ClickHouse setting.
-        static const NameSet reserved_param_names{"user", "password", "query", "time", "start", "end", "step", "match[]", "limit", "limit_per_metric", "metric", "lookback_delta", "database", "table"};
+        static const NameSet reserved_param_names{"user", "password", "query", "time", "start", "end", "step", "match[]", "limit", "limit_per_metric", "metric", "lookback_delta", "database", "table", "extra_label", "extra_filters", "extra_filters[]"};
         return !reserved_param_names.contains(name);
+    }
+
+    /// Passes the tenancy filters to `protocol`. If the URL has any of them, the request body's are ignored,
+    /// so the body can't widen the filters that a proxy put into the URL.
+    void setExtraFilters(PrometheusHTTPProtocolAPI & protocol, const HTTPServerRequest & request) const
+    {
+        HTMLForm url_params(default_settings, Poco::URI(request.getURI()));
+        const HTMLForm & source
+            = (url_params.has("extra_label") || url_params.has("extra_filters") || url_params.has("extra_filters[]")) ? url_params : *params;
+
+        Strings extra_filters = source.getAll("extra_filters");
+        for (auto & extra_filter : source.getAll("extra_filters[]"))
+            extra_filters.push_back(std::move(extra_filter));
+        protocol.setExtraFilters(source.getAll("extra_label"), extra_filters);
     }
 
     /// Parses the optional `limit` parameter of the metadata endpoints: the maximum number of returned items,
@@ -516,6 +530,7 @@ public:
 
             auto table = DatabaseCatalog::instance().getTable(getTimeSeriesTableID(), context);
             PrometheusHTTPProtocolAPI protocol{table, context};
+            setExtraFilters(protocol, request);
 
             auto query_finish_callback = [&]()
             {
