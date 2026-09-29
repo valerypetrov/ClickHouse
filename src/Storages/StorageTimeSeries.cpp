@@ -104,7 +104,10 @@ namespace
             && (setting_name != "metric_families_deduplication_cache_size_bytes")
             && (setting_name != "metric_families_deduplication_cache_expiration_seconds")
             && (setting_name != "tags_deduplication_cache_size_bytes")
-            && (setting_name != "tags_deduplication_cache_expiration_seconds"))
+            && (setting_name != "tags_deduplication_cache_expiration_seconds")
+            && (setting_name != "max_labels_per_series")
+            && (setting_name != "max_label_name_length")
+            && (setting_name != "max_label_value_length"))
             throw Exception(ErrorCodes::NOT_IMPLEMENTED,
                 "Setting '{}' of storage {} cannot be changed after the table is created", setting_name, storage_name);
     }
@@ -1440,6 +1443,7 @@ The following settings can be changed after `CREATE`:
 - `filter_by_min_time_and_max_time`
 - `metric_families_deduplication_cache_size_bytes`, `metric_families_deduplication_cache_expiration_seconds`
 - `tags_deduplication_cache_size_bytes`, `tags_deduplication_cache_expiration_seconds`
+- `max_labels_per_series`, `max_label_name_length`, `max_label_value_length`
 
 ```sql
 ALTER TABLE my_table MODIFY SETTING id_generator = 'sipHash64(tags)';
@@ -1478,6 +1482,9 @@ Here is a list of settings which can be specified while defining a `TimeSeries` 
 | `recent_samples_partition_by` | Expression | `toStartOfInterval(toDateTime(timestamp), toIntervalHour(5))` | Partition key of the inner `recent samples` table, for example `toStartOfHour(timestamp)`. When set explicitly, it overrides the partition key from the engine declaration; if neither is set, one partition per 5 hours is used. Ignored for an external recent samples table. Requires `recent_samples_ttl_seconds` to be non-zero |
 | `recent_samples_index_granularity` | UInt64 | 8192 | Sets `index_granularity` of the inner `recent samples` table. When set explicitly, it overrides `index_granularity` from the engine declaration. Ignored for an external recent samples table and a non-MergeTree engine. Requires `recent_samples_ttl_seconds` to be non-zero |
 | `tags_index_granularity` | UInt64 | 8192 | Sets `index_granularity` of the inner [tags](#tags-table) table. When set explicitly, it overrides `index_granularity` from the engine declaration. Ignored for an external tags table and a non-MergeTree engine |
+| `max_labels_per_series` | UInt64 | 0 | Maximum number of labels, including `__name__`, of a time series received through the Prometheus remote-write protocol. A time series with more labels is skipped and counted in the `PrometheusRemoteWriteSeriesSkippedByLabelLimits` profile event, and the rest of the request is written. Set to 0 to disable the limit |
+| `max_label_name_length` | UInt64 | 0 | Maximum length in bytes of a label name of a time series received through the Prometheus remote-write protocol. A time series with a longer label name is skipped the same way as with `max_labels_per_series`. Set to 0 to disable the limit |
+| `max_label_value_length` | UInt64 | 0 | Maximum length in bytes of a label value, including the metric name, of a time series received through the Prometheus remote-write protocol. A time series with a longer label value is skipped the same way as with `max_labels_per_series`. Set to 0 to disable the limit |
 
 ## Schema versioning {#schema-versioning}
 

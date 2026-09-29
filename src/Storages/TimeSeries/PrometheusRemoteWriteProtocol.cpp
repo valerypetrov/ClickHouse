@@ -7,6 +7,7 @@
 #include <Columns/ColumnDecimal.h>
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnTuple.h>
+#include <Common/ProfileEvents.h>
 #include <Common/logger_useful.h>
 #include <Common/saturatedDuration.h>
 #include <Core/DecimalFunctions.h>
@@ -25,12 +26,18 @@
 #include <Processors/Executors/PushingPipelineExecutor.h>
 #include <Storages/StorageTimeSeries.h>
 #include <Storages/TimeSeries/TimeSeriesColumnNames.h>
+#include <Storages/TimeSeries/TimeSeriesSettings.h>
 #include <Storages/TimeSeries/TimeSeriesTagNames.h>
 #include <Storages/TimeSeries/TimeSeriesVersion.h>
 #include <Storages/TimeSeries/splitTimeSeriesType.h>
 
 #include <chrono>
 
+
+namespace ProfileEvents
+{
+    extern const Event PrometheusRemoteWriteSeriesSkippedByLabelLimits;
+}
 
 namespace DB
 {
@@ -39,6 +46,13 @@ namespace Setting
 {
     extern const SettingsBool async_insert;
     extern const SettingsSeconds wait_for_async_insert_timeout;
+}
+
+namespace TimeSeriesSetting
+{
+    extern const TimeSeriesSettingsUInt64 max_label_name_length;
+    extern const TimeSeriesSettingsUInt64 max_label_value_length;
+    extern const TimeSeriesSettingsUInt64 max_labels_per_series;
 }
 
 namespace ErrorCodes
@@ -78,11 +92,52 @@ void insertTimestamp(Int64 timestamp_ms, UInt32 scale, IColumn & column)
         column.insert(DecimalUtils::convertTo<UInt32>(DateTime64{timestamp_ms}, 3));
 }
 
+struct LabelLimits
+{
+    UInt64 max_labels_per_series = 0;
+    UInt64 max_label_name_length = 0;
+    UInt64 max_label_value_length = 0;
+};
+
+/// Returns which label limit the time series exceeds, or an empty string if none.
+String checkLabelLimits(const google::protobuf::RepeatedPtrField<prometheus::Label> & labels, const LabelLimits & limits)
+{
+    auto truncate = [](const std::string & str) { return std::string_view{str}.substr(0, 50); };
+    auto metric_name = [&]
+    {
+        for (const auto & label : labels)
+            if (label.name() == TimeSeriesTagNames::MetricName)
+                return truncate(label.value());
+        return std::string_view{};
+    };
+
+    if (limits.max_labels_per_series && static_cast<UInt64>(labels.size()) > limits.max_labels_per_series)
+        return fmt::format("metric '{}' has {} labels, max_labels_per_series = {}",
+            metric_name(), labels.size(), limits.max_labels_per_series);
+
+    if (!limits.max_label_name_length && !limits.max_label_value_length)
+        return {};
+
+    for (const auto & label : labels)
+    {
+        if (limits.max_label_name_length && label.name().size() > limits.max_label_name_length)
+            return fmt::format("metric '{}' has a label name '{}' of {} bytes, max_label_name_length = {}",
+                metric_name(), truncate(label.name()), label.name().size(), limits.max_label_name_length);
+        if (limits.max_label_value_length && label.value().size() > limits.max_label_value_length)
+            return fmt::format("metric '{}' has a value of label '{}' of {} bytes, max_label_value_length = {}",
+                metric_name(), truncate(label.name()), label.value().size(), limits.max_label_value_length);
+    }
+    return {};
+}
+
 Block makeTimeSeriesBlock(
     const google::protobuf::RepeatedPtrField<prometheus::TimeSeries> & time_series,
     size_t num_metadata_rows,
     const StorageInMemoryMetadata & metadata,
-    const String & samples_column_name)
+    const String & samples_column_name,
+    const LabelLimits & label_limits,
+    size_t & num_series_over_limits,
+    String & first_series_over_limits)
 {
     const size_t num_rows = time_series.size() + num_metadata_rows;
 
@@ -111,6 +166,18 @@ Block makeTimeSeriesBlock(
 
     for (const auto & element : time_series)
     {
+        /// A time series exceeding the label limits gets an empty row, which `TimeSeriesSink` ignores.
+        if (String reason = checkLabelLimits(element.labels(), label_limits); !reason.empty())
+        {
+            if (!num_series_over_limits)
+                first_series_over_limits = std::move(reason);
+            ++num_series_over_limits;
+            metric_name_column->insertDefault();
+            tags_offsets->insert(tags_names->size());
+            time_series_offsets->insert(timestamps->size());
+            continue;
+        }
+
         std::string_view metric_name;
         bool has_metric_name = false;
         for (const auto & label : element.labels())
@@ -220,14 +287,24 @@ Block makeBlock(
     const google::protobuf::RepeatedPtrField<prometheus::TimeSeries> & time_series,
     const google::protobuf::RepeatedPtrField<prometheus::MetricMetadata> & metrics_metadata,
     const StorageInMemoryMetadata & metadata,
-    const String & samples_column_name)
+    const String & samples_column_name,
+    const LabelLimits & label_limits,
+    size_t & num_series_over_limits,
+    String & first_series_over_limits)
 {
     Block block;
     if (!time_series.empty())
     {
         appendBlock(
             block,
-            makeTimeSeriesBlock(time_series, metrics_metadata.size(), metadata, samples_column_name));
+            makeTimeSeriesBlock(
+                time_series,
+                metrics_metadata.size(),
+                metadata,
+                samples_column_name,
+                label_limits,
+                num_series_over_limits,
+                first_series_over_limits));
     }
     if (!metrics_metadata.empty())
     {
@@ -326,7 +403,27 @@ void PrometheusRemoteWriteProtocol::write(
 
     auto metadata = time_series_storage->getInMemoryMetadataPtr(getContext(), false);
     const auto * samples_column_name = TimeSeriesColumnNames::getOuterSamples(time_series_storage->getVersion());
-    insertBlock(makeBlock(time_series, metrics_metadata, *metadata, samples_column_name), *time_series_storage, getContext());
+    const auto settings = time_series_storage->getStorageSettings();
+    const LabelLimits label_limits{
+        (*settings)[TimeSeriesSetting::max_labels_per_series],
+        (*settings)[TimeSeriesSetting::max_label_name_length],
+        (*settings)[TimeSeriesSetting::max_label_value_length]};
+    size_t num_series_over_limits = 0;
+    String first_series_over_limits;
+    auto block = makeBlock(
+        time_series, metrics_metadata, *metadata, samples_column_name, label_limits, num_series_over_limits, first_series_over_limits);
+    insertBlock(std::move(block), *time_series_storage, getContext());
+
+    if (num_series_over_limits)
+    {
+        ProfileEvents::increment(ProfileEvents::PrometheusRemoteWriteSeriesSkippedByLabelLimits, num_series_over_limits);
+        LOG_WARNING(
+            log,
+            "{}: Skipped {} time series exceeding the label limits of the table, the first one: {}",
+            storage_id.getNameForLogs(),
+            num_series_over_limits,
+            first_series_over_limits);
+    }
 
     LOG_TRACE(
         log,
