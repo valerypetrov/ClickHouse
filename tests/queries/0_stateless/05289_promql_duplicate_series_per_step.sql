@@ -21,7 +21,14 @@ INSERT INTO prometheus (metric_name, tags, samples) VALUES
     ('d_total', map('job', 'k'), arrayMap(i -> (toDateTime64(130 + i * 10, 3), (i + 1) * 10), range(7))),
     ('e_total', map('job', 'm'), arrayMap(i -> (toDateTime64(100 + i * 10, 3), i + 1), range(7))),
     ('f_total', map('job', 'm'), [(toDateTime64(150, 3), 5)]),
-    ('thr', map('job', 'j'), arrayMap(i -> (toDateTime64(100 + i * 100, 3), 0.5), range(11)));
+    ('thr', map('job', 'j'), arrayMap(i -> (toDateTime64(100 + i * 100, 3), 0.5), range(11))),
+    ('n', map('job', 'j'), arrayMap(i -> (toDateTime64(100 + i * 10, 3), nan), range(7))),
+    ('s1', map('job', 's'), [(toDateTime64(140, 3), 1), (toDateTime64(150, 3), 1), (toDateTime64(160, 3), reinterpretAsFloat64(0x7FF0000000000002))]),
+    ('s2', map('job', 's'), arrayMap(i -> (toDateTime64(170 + i * 10, 3), 2), range(4))),
+    ('x', map('job', 'g', 't', '1'), arrayMap(i -> (toDateTime64(100 + i * 10, 3), 1), range(7))),
+    ('x', map('job', 'g', 't', '2'), arrayMap(i -> (toDateTime64(100 + i * 10, 3), 10), range(7))),
+    ('x', map('job', 'g', 't', '3'), arrayMap(i -> (toDateTime64(1000 + i * 10, 3), 20), range(7))),
+    ('thr3', map('job', 'g', 't', 'z'), arrayMap(i -> (toDateTime64(100 + i * 100, 3), 5), range(11)));
 
 SELECT '-- rate over series which never overlap';
 SELECT * FROM prometheusQueryRange('prometheus', 'rate({__name__=~\'a_total|b_total\'}[60s])', 160, 1060, 100);
@@ -40,6 +47,24 @@ SELECT * FROM prometheusQueryRange('prometheus', 'thr + on(job) {__name__=~\'a_t
 
 SELECT '-- binary operator, the result has series which never overlap';
 SELECT * FROM prometheusQueryRange('prometheus', '{__name__=~\'a_total|b_total\'} + on(job) group_left thr', 160, 1060, 100);
+
+SELECT '-- group_left, the side "one" has series which never overlap';
+SELECT * FROM prometheusQueryRange('prometheus', 'thr + on(job) group_left {__name__=~\'a_total|b_total\'}', 160, 1060, 100);
+
+SELECT '-- group_right, the side "one" has series which never overlap';
+SELECT * FROM prometheusQueryRange('prometheus', '{__name__=~\'a_total|b_total\'} + on(job) group_right thr', 160, 1060, 100);
+
+SELECT '-- NaN is a value';
+SELECT * FROM prometheusQueryRange('prometheus', '-{__name__=~\'n|b_total\'}', 160, 1060, 100);
+SELECT * FROM prometheusQuery('prometheus', '-{__name__=~\'n|a_total\'}', 160); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }
+
+SELECT '-- a stale marker ends the series';
+SELECT * FROM prometheusQueryRange('prometheus', '-{__name__=~\'s1|s2\'}', 140, 200, 10);
+
+SELECT '-- group_left(t) with a comparison: a match which the comparison drops is still a duplicate';
+SELECT * FROM prometheusQuery('prometheus', 'x > on(job) group_left(t) thr3', 160); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }
+SELECT * FROM prometheusQuery('prometheus', 'x > bool on(job) group_left(t) thr3', 160); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }
+SELECT * FROM prometheusQueryRange('prometheus', 'x{t!="2"} > on(job) group_left(t) thr3', 160, 1060, 100);
 
 SELECT '-- series which overlap';
 SELECT * FROM prometheusQueryRange('prometheus', 'rate({__name__=~\'c_total|d_total\'}[60s])', 160, 260, 100); -- { serverError CANNOT_EXECUTE_PROMQL_QUERY }

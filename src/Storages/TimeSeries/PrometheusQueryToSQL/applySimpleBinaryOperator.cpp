@@ -6,6 +6,7 @@
 #include <Parsers/ASTLiteral.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/applyComparisonOperator.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/applySimpleFunction.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/dropMetricName.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/mergeDuplicateSeries.h>
@@ -385,7 +386,16 @@ namespace
             {
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Group));
 
-                builder.having = makeDuplicateSeriesCheck(row_values, make_intrusive<ASTIdentifier>(ColumnNames::Group));
+                /// Prometheus checks matched pairs before a comparison filters them out, and `x + y` is NULL only if a side has no value.
+                ASTPtr pairs = row_values;
+                if (isComparisonOperator(operator_node->operator_name) && !operator_node->bool_modifier)
+                    pairs = makeASTFunction(
+                        "arrayMap",
+                        makeASTLambda({"x", "y"}, makeASTFunction("plus", make_intrusive<ASTIdentifier>("x"), make_intrusive<ASTIdentifier>("y"))),
+                        make_intrusive<ASTIdentifier>(Strings{left, ColumnNames::Values}),
+                        make_intrusive<ASTIdentifier>(Strings{right, ColumnNames::Values}));
+
+                builder.having = makeDuplicateSeriesCheck(pairs, make_intrusive<ASTIdentifier>(ColumnNames::Group));
             }
 
             result_ast = builder.getSelectQuery();
