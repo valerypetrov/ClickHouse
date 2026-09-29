@@ -16,7 +16,6 @@
 namespace DB::ErrorCodes
 {
     extern const int CANNOT_EXECUTE_PROMQL_QUERY;
-    extern const int NOT_IMPLEMENTED;
 }
 
 
@@ -80,14 +79,43 @@ namespace
             }
             case StoreMethod::SCALAR_GRID:
             {
-                throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-                                "Aggregation operator 'quantile' with a non-constant scalar parameter is not supported");
+                /// A scalar grid is one row with an array of phi for every step, so it is a scalar subquery too.
+                context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), std::move(phi_arg.select_query), SQLSubqueryType::SCALAR});
+                return make_intrusive<ASTIdentifier>(context.subqueries.back().name);
             }
             default:
             {
                 throwUnexpectedStoreMethod(phi_arg, context);
             }
         }
+    }
+
+    /// Builds quantileExactInclusive(phi) of `sorted`, the sorted values without NaN, as an expression, so that phi can differ from row to row.
+    ASTPtr makeQuantileExactInclusive(const ASTPtr & sorted, const ASTPtr & phi)
+    {
+        /// h = phi * (length(sorted) - 1) + 1 and n = toUInt64(h), with phi clamped to [0, 1] so that toUInt64() never throws.
+        auto h = [&]
+        {
+            return makeASTFunction("plus",
+                makeASTFunction("multiply",
+                    makeASTFunction("least", makeASTFunction("greatest", phi->clone(), make_intrusive<ASTLiteral>(0.)), make_intrusive<ASTLiteral>(1.)),
+                    makeASTFunction("minus", makeASTFunction("length", sorted->clone()), make_intrusive<ASTLiteral>(1u))),
+                make_intrusive<ASTLiteral>(1.));
+        };
+        auto n = [&] { return makeASTFunction("toUInt64", h()); };
+        auto sorted_at = [&](ASTPtr index) { return makeASTFunction("arrayElement", sorted->clone(), std::move(index)); };
+
+        /// multiIf(empty(sorted), nan, n >= length(sorted), sorted[n], sorted[n] + (h - n) * (sorted[n + 1] - sorted[n]))
+        return makeASTFunction("multiIf",
+            makeASTFunction("empty", sorted->clone()),
+            make_intrusive<ASTLiteral>(std::numeric_limits<Float64>::quiet_NaN()),
+            makeASTFunction("greaterOrEquals", n(), makeASTFunction("length", sorted->clone())),
+            sorted_at(n()),
+            makeASTFunction("plus",
+                sorted_at(n()),
+                makeASTFunction("multiply",
+                    makeASTFunction("minus", h(), n()),
+                    makeASTFunction("minus", sorted_at(makeASTFunction("plus", n(), make_intrusive<ASTLiteral>(1u))), sorted_at(n())))));
     }
 }
 
@@ -206,6 +234,44 @@ SQLQueryPiece applyAggregationOperatorQuantile(
                 addParametersToAggregateFunction(
                     makeASTFunction("quantileExactInclusiveForEach", make_intrusive<ASTIdentifier>(ColumnNames::Values)),
                     std::move(clamped_phi)));
+        }
+        else if (phi_arg.store_method == StoreMethod::SCALAR_GRID)
+        {
+            /// A phi varying per step can't be an aggregate function parameter, so every step's values are collected:
+            /// arrayMap((step_values, sorted, phi) -> multiIf(..., quantileExactInclusive(phi)(sorted)), groupArrayForEach(values), <sorted>, <phi grid>)
+            ASTPtr phi_grid = getPhi(std::move(phi_arg), context);
+            auto step_values = [] { return make_intrusive<ASTIdentifier>("step_values"); };
+            auto sorted = [] { return make_intrusive<ASTIdentifier>("sorted"); };
+            auto phi = [] { return make_intrusive<ASTIdentifier>("phi"); };
+            auto grouped_values = [] { return makeASTFunction("groupArrayForEach", make_intrusive<ASTIdentifier>(ColumnNames::Values)); };
+
+            ASTPtr step_quantile = makeASTFunction("multiIf",
+                makeASTFunction("empty", step_values()),
+                make_intrusive<ASTLiteral>(Field{} /* NULL */),
+                makeASTFunction("isNaN", phi()),
+                make_intrusive<ASTLiteral>(std::numeric_limits<Float64>::quiet_NaN()),
+                makeASTFunction("less", phi(), make_intrusive<ASTLiteral>(0.)),
+                make_intrusive<ASTLiteral>(-std::numeric_limits<Float64>::infinity()),
+                makeASTFunction("greater", phi(), make_intrusive<ASTLiteral>(1.)),
+                make_intrusive<ASTLiteral>(std::numeric_limits<Float64>::infinity()),
+                makeQuantileExactInclusive(sorted(), phi()));
+
+            /// arrayMap(step -> arraySort(arrayFilter(x -> NOT isNaN(x), step)), groupArrayForEach(values))
+            /// is passed to the lambda because multiIf() would repeat a sort inside the lambda in every branch using it.
+            ASTPtr sorted_values = makeASTFunction("arrayMap",
+                makeASTLambda({"step"},
+                    makeASTFunction("arraySort",
+                        makeASTFunction("arrayFilter",
+                            makeASTLambda({"x"}, makeASTFunction("not", makeASTFunction("isNaN", make_intrusive<ASTIdentifier>("x")))),
+                            make_intrusive<ASTIdentifier>("step")))),
+                grouped_values());
+
+            /// Without input rows groupArrayForEach() returns an empty array, so the phi grid is replaced with an empty one too.
+            quantile_expr = makeASTFunction("arrayMap",
+                makeASTLambda({"step_values", "sorted", "phi"}, std::move(step_quantile)),
+                grouped_values(),
+                std::move(sorted_values),
+                makeASTFunction("if", makeASTFunction("empty", grouped_values()), make_intrusive<ASTLiteral>(Array{}), std::move(phi_grid)));
         }
         else
         {
