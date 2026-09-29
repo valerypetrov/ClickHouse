@@ -4,6 +4,7 @@ import re
 from helpers.cluster import ClickHouseCluster
 from helpers.test_tools import TSV, tsv_close_to
 from .prometheus_test_utils import (
+    convert_time_series_to_protobuf,
     execute_query_via_http_api,
     load_preset,
     send_protobuf_to_remote_write,
@@ -387,6 +388,29 @@ def test_index_granularity():
         "SELECT engine_full FROM system.tables WHERE database = currentDatabase() "
         "AND name = (SELECT _table FROM timeSeriesTags(prometheus) LIMIT 1)"
     )
+
+
+# Checks that a remote-write request resent by the sender doesn't duplicate samples.
+@pytest.mark.parametrize("path", ["/write", "/write?async_insert=1"])
+def test_resent_request_is_deduplicated(path):
+    node.query("CREATE TABLE prometheus ENGINE=TimeSeries")
+
+    def count_samples():
+        return int(node.query("SELECT count() FROM timeSeriesSamples(prometheus)"))
+
+    send_protobuf_to_remote_write(node.ip_address, 9093, path, preset)
+    num_samples = count_samples()
+    assert num_samples > 0
+
+    for _ in range(2):
+        send_protobuf_to_remote_write(node.ip_address, 9093, path, preset)
+    assert count_samples() == num_samples
+
+    other_request = convert_time_series_to_protobuf(
+        [({"__name__": "resent_request_test"}, {timestamp: 1.0})]
+    )
+    send_protobuf_to_remote_write(node.ip_address, 9093, path, other_request)
+    assert count_samples() == num_samples + 1
 
 
 # Checks that a TimeSeries table can be used to access pre-existing external tables

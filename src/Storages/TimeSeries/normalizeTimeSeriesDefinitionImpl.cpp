@@ -78,6 +78,9 @@ namespace ErrorCodes
 
 namespace
 {
+    /// The deduplication window of the samples tables with the `MergeTree` engine, the default `replicated_deduplication_window`.
+    constexpr UInt64 SAMPLES_DEDUPLICATION_WINDOW = 10000;
+
     /// All target kinds of a TimeSeries table.
     /// The RecentSamples target is optional: it's enabled by the `recent_samples_ttl_seconds` setting.
     constexpr std::array<ViewTarget::Kind, 4> getTargetKinds()
@@ -889,7 +892,9 @@ namespace
                     return;
                 if (sorting_key_equals("id, timestamp"))
                     inner_engine.reset(inner_engine.order_by);
-                remove_settings({{"index_granularity", settings[TimeSeriesSetting::samples_index_granularity].value}});
+                remove_settings({
+                    {"index_granularity", settings[TimeSeriesSetting::samples_index_granularity].value},
+                    {"non_replicated_deduplication_window", SAMPLES_DEDUPLICATION_WINDOW}});
                 break;
             }
 
@@ -914,6 +919,7 @@ namespace
 
                 remove_settings({
                     {"index_granularity", settings[TimeSeriesSetting::recent_samples_index_granularity].value},
+                    {"non_replicated_deduplication_window", SAMPLES_DEDUPLICATION_WINDOW},
                     {"ttl_only_drop_parts", static_cast<UInt64>(1)}});
                 break;
             }
@@ -1535,6 +1541,10 @@ namespace
                     ? TimeSeriesSetting::samples_index_granularity
                     : TimeSeriesSetting::recent_samples_index_granularity];
                 set_index_granularity(index_granularity);
+
+                /// A retried insert of the same block must not duplicate samples, the replicated engines deduplicate it by default.
+                if ((inner_engine.engine->name == "MergeTree") && !has_engine_setting("non_replicated_deduplication_window"))
+                    set_engine_setting("non_replicated_deduplication_window", SAMPLES_DEDUPLICATION_WINDOW);
 
                 if (inner_table_kind != ViewTarget::RecentSamples)
                     break;

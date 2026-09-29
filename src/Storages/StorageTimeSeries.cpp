@@ -1172,14 +1172,14 @@ SAMPLES INNER COLUMNS
     `timestamp` DateTime64(3) CODEC(Delta, T64, ZSTD(3)),
     `value` Float64 CODEC(ALP, ZSTD(3))
 )
-SAMPLES INNER ENGINE = MergeTree ORDER BY (id, timestamp) SETTINGS index_granularity = 32768
+SAMPLES INNER ENGINE = MergeTree ORDER BY (id, timestamp) SETTINGS index_granularity = 32768, non_replicated_deduplication_window = 10000
 RECENT SAMPLES INNER COLUMNS
 (
     `id` Tuple(UInt64, UUID),
     `timestamp` DateTime64(3) CODEC(Delta, T64, ZSTD(3)),
     `value` Float64 CODEC(ALP, ZSTD(3))
 )
-RECENT SAMPLES INNER ENGINE = MergeTree PARTITION BY toStartOfInterval(toDateTime(timestamp), toIntervalHour(5)) ORDER BY (id, timestamp) TTL toDateTime(timestamp) + toIntervalSecond(345600) SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
+RECENT SAMPLES INNER ENGINE = MergeTree PARTITION BY toStartOfInterval(toDateTime(timestamp), toIntervalHour(5)) ORDER BY (id, timestamp) TTL toDateTime(timestamp) + toIntervalSecond(345600) SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000, ttl_only_drop_parts = 1
 TAGS INNER COLUMNS
 (
     `id` Tuple(UInt64, LowCardinality(UUID)) DEFAULT tuple(sipHash64(metric_name), toLowCardinality(reinterpretAsUUID(sipHash128(tags)))),
@@ -1219,7 +1219,7 @@ CREATE TABLE default.`.inner_id.samples.xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 )
 ENGINE = MergeTree
 ORDER BY (id, timestamp)
-SETTINGS index_granularity = 32768
+SETTINGS index_granularity = 32768, non_replicated_deduplication_window = 10000
 ```
 
 ```sql
@@ -1233,7 +1233,7 @@ ENGINE = MergeTree
 PARTITION BY toStartOfInterval(toDateTime(timestamp), toIntervalHour(5))
 ORDER BY (id, timestamp)
 TTL toDateTime(timestamp) + toIntervalSecond(345600)
-SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1
+SETTINGS index_granularity = 8192, non_replicated_deduplication_window = 10000, ttl_only_drop_parts = 1
 ```
 
 ```sql
@@ -1375,6 +1375,11 @@ skips the time series written recently (see the `tags_deduplication_cache_expira
 - the [metric families](#metric-families-table) table uses [ReplacingMergeTree](/reference/engines/table-engines/mergetree-family/replacingmergetree) because the same data is often inserted multiple times to this table so we need a way
 to remove duplicates. Most duplicates don't even reach the table: the deduplication cache of the `TimeSeries` table skips the metric families
 written recently (see the `metric_families_deduplication_cache_expiration_seconds` setting).
+
+A samples or recent samples table with the `MergeTree` engine gets the setting `non_replicated_deduplication_window = 10000`
+if the setting isn't specified, like the default `replicated_deduplication_window` of the replicated engines.
+So an insert repeated with the same data, e.g. a Prometheus remote-write request resent by the sender after a timeout,
+doesn't duplicate the samples. Specify `non_replicated_deduplication_window = 0` in the engine declaration to turn this off.
 
 The engine family of the generated inner tables follows the `default_table_engine` query-level setting:
 with `default_table_engine = ReplicatedMergeTree` or `SharedMergeTree` the inner tables use the corresponding

@@ -1,0 +1,9 @@
+-- the samples and recent samples tables get the deduplication window
+non_replicated_deduplication_window = 10000
+non_replicated_deduplication_window = 10000
+-- the same data inserted three times is written once
+2	2
+-- different data is written
+3	3
+-- a window specified in the engine declaration is kept
+2
