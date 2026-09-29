@@ -47,6 +47,16 @@ def start_cluster():
             "INSERT INTO prometheus_tags VALUES ('00000000-0000-0000-0000-000000000001', 'up',"
             " {'instance':'host1'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC'))"
         )
+        for i in range(2, 5):
+            node.query(
+                f"INSERT INTO prometheus_tags VALUES ('00000000-0000-0000-0000-00000000000{i}',"
+                f" 'foo', {{'instance':'host{i}'}}, toDateTime64(1699999000, 3, 'UTC'),"
+                " toDateTime64(1700001000, 3, 'UTC'))"
+            )
+            node.query(
+                "INSERT INTO prometheus_data VALUES"
+                f" ('00000000-0000-0000-0000-00000000000{i}', toDateTime64(1700000000, 3, 'UTC'), {i})"
+            )
         node.query(
             "INSERT INTO prometheus_data VALUES"
             " ('00000000-0000-0000-0000-000000000001', toDateTime64(1700000000, 3, 'UTC'), 1)"
@@ -62,12 +72,12 @@ def clear_query_cache():
     yield
 
 
-def run_instant_query(params, expect_error=False, timestamp=EVALUATION_TIME):
+def run_instant_query(params, expect_error=False, timestamp=EVALUATION_TIME, query="up"):
     result = execute_query_via_http_api(
         node.ip_address,
         9093,
         "/api/v1/query",
-        "up",
+        query,
         timestamp=timestamp,
         params=params,
         expect_error=expect_error,
@@ -148,3 +158,11 @@ def test_query_cache_stores_and_hits_range_query():
     hits_before = get_query_cache_hits()
     assert run_range_query(params) == expected
     assert get_query_cache_hits() == hits_before + 1
+
+
+def test_query_cache_does_not_cache_subqueries():
+    # A cached generated subquery loses its per-query state and drops the `up` series.
+    params = {"use_query_cache": 1, "query_cache_for_subqueries": 1}
+    run_instant_query(params)
+    assert len(run_instant_query(params, query="foo or up")["result"]) == 4
+    assert int(node.query("SELECT count() FROM system.query_cache WHERE is_subquery")) == 0

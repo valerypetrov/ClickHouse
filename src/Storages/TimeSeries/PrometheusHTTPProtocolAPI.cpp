@@ -259,7 +259,11 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
     const auto & settings = getContext()->getSettingsRef();
     if (settings[Setting::use_query_cache] && !evaluation_settings.use_current_time
         && !settings[Setting::query_cache_nondeterministic_function_handling].changed)
+    {
         query_context->setSetting("query_cache_nondeterministic_function_handling", String("save"));
+        /// The generated subqueries share per-query state, so they must not be cached one by one.
+        query_context->setSetting("query_cache_for_subqueries", false);
+    }
 
     auto [ast, io] = executeQuery(sql_query->formatWithSecretsOneLine(), query_context, {}, QueryProcessingStage::Complete);
 
