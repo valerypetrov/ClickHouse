@@ -441,9 +441,10 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
         && settings[Setting::distinct_overflow_mode] == OverflowMode::THROW;
     const Int64 cache_max_end_seconds = time(nullptr) - cache_min_age;
 
-    /// Each chunk is a separate query, so the time limit of the whole request is checked between them.
+    /// Each chunk is a separate query with the whole time limit, so the time limit of the request is checked every 100 ms while a chunk runs.
     ExecutionSpeedLimits limits;
     limits.max_execution_time = settings[Setting::max_execution_time];
+    const UInt64 pull_timeout_ms = (limits.max_execution_time != 0) ? 100 : 0;
     Stopwatch watch;
 
     /// A series is written once with the samples of all chunks, so the results of all chunks are kept until the response is written.
@@ -494,10 +495,15 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
             PullingAsyncPipelineExecutor executor(io.pipeline);
             Blocks & chunk = chunks.emplace_back();
             Block block;
-            while (executor.pull(block))
+            while (executor.pull(block, pull_timeout_ms))
             {
                 if (block.rows() > 0)
                     chunk.push_back(std::move(block));
+                if (!limits.checkTimeLimit(watch.elapsedNanoseconds(), settings[Setting::timeout_overflow_mode]))
+                {
+                    executor.cancel();
+                    break;
+                }
             }
             io.pipeline.finalizeWriteInQueryResultCache();
         }
