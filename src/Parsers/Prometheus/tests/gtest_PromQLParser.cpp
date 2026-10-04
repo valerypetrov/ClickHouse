@@ -2054,10 +2054,24 @@ PrometheusQueryTree(INSTANT_VECTOR):
 
     expectRoundTrip(R"(time{job="x"} + rate)", R"(time{job="x"} + rate)");
 
+    /// `start` and `end` are function names too, except in the @ modifier.
+    EXPECT_EQ(parse("vector(start())"), R"(
+vector(start())
+
+PrometheusQueryTree(INSTANT_VECTOR):
+    Function(vector):
+        Function(start)
+)");
+    expectRoundTrip("end() - start()", "end() - start()");
+    expectRoundTrip("x @ end() - start ()", "x @ end() - start()");
+
     /// A name with ':' cannot be called.
     PrometheusQueryTree query_tree;
     String error_message;
     size_t error_pos = 0;
     EXPECT_FALSE(query_tree.tryParse("foo:bar(x)", 3, &error_message, &error_pos));
     EXPECT_FALSE(error_message.empty());
+
+    /// Function names are case-sensitive, so `START()` is not a call of `start`.
+    EXPECT_FALSE(query_tree.tryParse("START()", 3, &error_message, &error_pos));
 }

@@ -12,7 +12,9 @@ CREATE TABLE prometheus ENGINE = TimeSeries;
 
 INSERT INTO prometheus (metric_name, tags, samples) VALUES
     ('rate', map('job', 'a'), [(toDateTime64(100, 3), 1.5), (toDateTime64(110, 3), 2.5)]),
-    ('time', map('job', 'b'), [(toDateTime64(110, 3), 4)]);
+    ('time', map('job', 'b'), [(toDateTime64(110, 3), 4)]),
+    ('start', map('job', 'c'), [(toDateTime64(110, 3), 5)]),
+    ('end', map('job', 'd'), [(toDateTime64(110, 3), 6)]);
 
 SELECT '-- metrics named like functions';
 SELECT * FROM prometheusQuery('prometheus', 'rate', 110);
@@ -28,5 +30,16 @@ SELECT * FROM prometheusQuery('prometheus', 'foo_bar(rate)', 110); -- { serverEr
 SELECT * FROM prometheusQuery('prometheus', 'foo_bar (rate)', 110); -- { serverError UNKNOWN_FUNCTION }
 SELECT * FROM prometheusQuery('prometheus', 'Rate(rate[1m])', 110); -- { serverError UNKNOWN_FUNCTION }
 SELECT * FROM prometheusQuery('prometheus', 'info(rate)', 110); -- { serverError NOT_IMPLEMENTED }
+
+SELECT '-- start and end';
+SELECT * FROM prometheusQuery('prometheus', 'start()', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'end()', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'vector(start())', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'end() - start()', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'START()', 110); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
+SELECT * FROM prometheusQuery('prometheus', 'start', 110);
+SELECT * FROM prometheusQuery('prometheus', 'end', 110);
+SELECT * FROM prometheusQueryRange('prometheus', 'rate @ start()', 100, 110, 10);
+SELECT * FROM prometheusQueryRange('prometheus', 'rate @ end ()', 100, 110, 10);
 
 DROP TABLE prometheus;

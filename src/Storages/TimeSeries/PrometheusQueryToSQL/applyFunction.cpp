@@ -33,9 +33,9 @@ namespace
 {
     /// Prometheus functions and aggregation operators which are not implemented here yet.
     constexpr std::string_view not_implemented_functions[] = {
-        "double_exponential_smoothing", "histogram_avg", "histogram_count", "histogram_fraction", "histogram_quantiles",
+        "double_exponential_smoothing", "end", "histogram_avg", "histogram_count", "histogram_fraction", "histogram_quantiles",
         "histogram_stddev", "histogram_stdvar", "histogram_sum", "info", "integral", "limit_ratio", "range", "sort",
-        "sort_by_label", "sort_by_label_desc", "sort_desc", "start_timestamp", "step"};
+        "sort_by_label", "sort_by_label_desc", "sort_desc", "start", "start_timestamp", "step"};
 }
 
 SQLQueryPiece applyFunction(

@@ -147,9 +147,16 @@ namespace
         std::unique_ptr<antlr4::Token> nextToken() override
         {
             auto next_token = PromQLLexer::nextToken();
+            const size_t type = next_token->getType();
+            const String text = (type == METRIC_NAME || type == START || type == END) ? next_token->getText() : "";
             /// Like in Prometheus, a name without ':' followed by '(' is a function name.
-            if (next_token->getType() == METRIC_NAME && !next_token->getText().contains(':') && isFollowedByLeftParen())
+            /// So are `start` and `end`, except right after '@'.
+            const bool is_name = (type == METRIC_NAME && !text.contains(':'))
+                || ((text == "start" || text == "end") && previous_token_type != AT);
+            if (is_name && isFollowedByLeftParen())
                 static_cast<antlr4::WritableToken *>(next_token.get())->setType(FUNCTION);
+            if (next_token->getChannel() == antlr4::Token::DEFAULT_CHANNEL)
+                previous_token_type = next_token->getType();
 
             if (!error_listener.hasError() && next_token->getType() == STRING && next_token->getLine() != getLine())
             {
@@ -220,6 +227,7 @@ namespace
 
         std::string_view promql_query;
         ErrorListener & error_listener;
+        size_t previous_token_type = antlr4::Token::INVALID_TYPE;
     };
 
     [[noreturn]] void throwInconsistentSchema(std::string_view context_name, std::string_view token)
