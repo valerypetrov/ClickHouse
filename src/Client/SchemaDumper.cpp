@@ -101,6 +101,13 @@ namespace ErrorCodes
     extern const int CANNOT_OPEN_FILE;
     extern const int CANNOT_WRITE_TO_FILE;
     extern const int NOT_IMPLEMENTED;
+    extern const int NO_REMOTE_SHARD_AVAILABLE;
+    extern const int ALL_CONNECTION_TRIES_FAILED;
+    extern const int NETWORK_ERROR;
+    extern const int SOCKET_TIMEOUT;
+    extern const int DNS_ERROR;
+    extern const int AUTHENTICATION_FAILED;
+    extern const int REQUIRED_PASSWORD;
 }
 
 namespace
@@ -530,6 +537,8 @@ struct ClusterLocality
     std::function<const std::map<String, std::map<String, String>> &()> named_collections;
     /// Server hostnames and local cluster replica addresses considered local dependencies.
     std::function<const std::set<String> &()> local_hostnames;
+    /// Asks the server whether a `remote*` address reaches the server itself. Not set for clickhouse-local.
+    std::function<bool(const String & address, bool secure)> address_is_this_server;
     /// For mirroring the server's constant folding of `cluster*` name/table arguments.
     ContextPtr context;
 };
@@ -644,8 +653,8 @@ bool isRemoteFunctionName(const String & name)
     return equalsCaseInsensitive(name, "remote") || equalsCaseInsensitive(name, "remoteSecure");
 }
 
-/// Whether the server reads one replica of a `remote*` pattern locally: only a loopback address or a name the server
-/// reports as its own, on its port, counts, because the dump cannot resolve other hosts the way the server does.
+/// Whether one replica of a `remote*` pattern is the server itself, on its port: a loopback address or name it reports
+/// as its own, or else what the server answers about the address, so its interface IPs and other aliases count too.
 bool remoteAddressIsLocal(const String & address, bool secure, const ClusterLocality & clusters)
 {
     bool has_explicit_port = address.starts_with('[') ? address.contains("]:") : address.contains(':');
@@ -664,15 +673,15 @@ bool remoteAddressIsLocal(const String & address, bool secure, const ClusterLoca
     if (equalsCaseInsensitive(host, "localhost"))
         return true;
     /// `isLocalAddress` decides a loopback address by its value alone, so the client answers it the way the server does.
-    if (Poco::Net::IPAddress ip; Poco::Net::IPAddress::tryParse(host, ip) && ip.isLoopback())
-        return isLocalAddress(ip);
+    if (Poco::Net::IPAddress ip; Poco::Net::IPAddress::tryParse(host, ip) && ip.isLoopback() && isLocalAddress(ip))
+        return true;
     if (clusters.local_hostnames)
     {
         for (const auto & local_host : clusters.local_hostnames())
             if (equalsCaseInsensitive(host, local_host))
                 return true;
     }
-    return false;
+    return clusters.address_is_this_server && clusters.address_is_this_server(address, secure);
 }
 
 /// Whether any replica of a `remote*` address pattern is read without a connection.
@@ -2019,6 +2028,38 @@ std::vector<TableInfo> fetchTables(
         return *cached;
     };
     clusters.treat_local_port_as_remote = context->getApplicationType() == Context::ApplicationType::LOCAL;
+    if (!clusters.treat_local_port_as_remote)
+        clusters.address_is_this_server
+            = [&, own_uuid = String{}, cached = std::map<std::pair<String, bool>, bool>{}](const String & address, bool secure) mutable
+        {
+            if (auto it = cached.find({address, secure}); it != cached.end())
+                return it->second;
+            if (own_uuid.empty())
+                own_uuid = fetchStringColumn(
+                    connection, timeouts, client_info, "SELECT toString(serverUUID())", context->getSettingsRef()).at(0);
+            bool is_this_server = false;
+            try
+            {
+                const String query = String("SELECT toString(serverUUID()) FROM ") + (secure ? "remoteSecure(" : "remote(")
+                    + quoteString(address) + ", system.one)";
+                const auto uuids = fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef());
+                is_this_server = !uuids.empty() && uuids.front() == own_uuid;
+            }
+            catch (const Exception & e)
+            {
+                /// These errors mean the server went over the network and found no server, or another one.
+                static const std::set<int> not_this_server = {ErrorCodes::NO_REMOTE_SHARD_AVAILABLE,
+                    ErrorCodes::ALL_CONNECTION_TRIES_FAILED, ErrorCodes::NETWORK_ERROR, ErrorCodes::SOCKET_TIMEOUT,
+                    ErrorCodes::DNS_ERROR, ErrorCodes::AUTHENTICATION_FAILED, ErrorCodes::REQUIRED_PASSWORD};
+                if (!not_this_server.contains(e.code()))
+                    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
+                        "Cannot tell whether remote address {} is the connected server for --dump-schema, "
+                        "so a dependency on its tables may be missed: asking the server failed: {}",
+                        address, e.message());
+            }
+            cached.emplace(std::pair{address, secure}, is_this_server);
+            return is_this_server;
+        };
     using NamedCollectionMap = std::map<String, std::map<String, String>>;
     clusters.named_collections
         = [&, cached = std::optional<NamedCollectionMap>{}]() mutable -> const NamedCollectionMap &

@@ -645,6 +645,9 @@ rm -f "$LOCAL_REMOTE_DUMP_FILE"
 echo '--- a remote() address on another host is not a local dependency ---'
 # A reader of another host has no local edge, so it sorts by name before its source; column lists avoid connecting.
 SERVER_HOST=$($CLICKHOUSE_CLIENT -q "SELECT hostName()")
+# The server's own interface IP and 0.0.0.0 reach the server too, but only the server can tell.
+SERVER_IP=$(getent ahostsv4 "$SERVER_HOST" 2>/dev/null | awk '$1 !~ /^127\./ {print $1; exit}')
+SERVER_IP=${SERVER_IP:-0.0.0.0}
 $CLICKHOUSE_CLIENT -mq "
 CREATE TABLE ${DB}.zzz_remote_src (id UInt64) ENGINE = MergeTree ORDER BY id;
 CREATE VIEW ${DB}.aaa_remote_ip (id UInt64) AS SELECT * FROM remote('198.51.100.10:${CLICKHOUSE_PORT_TCP}', '${DB}', 'zzz_remote_src');
@@ -652,11 +655,13 @@ CREATE VIEW ${DB}.aab_remote_host (id UInt64) AS SELECT * FROM remote('dump-sche
 CREATE VIEW ${DB}.aac_remote_secure (id UInt64) AS SELECT * FROM remoteSecure('203.0.113.20', '${DB}', 'zzz_remote_src');
 CREATE VIEW ${DB}.aad_remote_loopback (id UInt64) AS SELECT * FROM remote('127.0.0.1', '${DB}', 'zzz_remote_src');
 CREATE VIEW ${DB}.aae_remote_own_host (id UInt64) AS SELECT * FROM remote('${SERVER_HOST}:${CLICKHOUSE_PORT_TCP}', '${DB}', 'zzz_remote_src');
+CREATE VIEW ${DB}.aaf_remote_own_ip (id UInt64) AS SELECT * FROM remote('${SERVER_IP}:${CLICKHOUSE_PORT_TCP}', '${DB}', 'zzz_remote_src');
+CREATE VIEW ${DB}.aag_remote_any_ip (id UInt64) AS SELECT * FROM remote('0.0.0.0:${CLICKHOUSE_PORT_TCP}', '${DB}', 'zzz_remote_src');
 "
 OTHER_HOST_DUMP_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_other_host_dump.sql"
 if $CLICKHOUSE_CLIENT --dump-schema="${DB}" > "$OTHER_HOST_DUMP_FILE" 2>"$ERR_FILE"; then
     SRC_LINE=$(grep -n "CREATE TABLE ${DB}\.zzz_remote_src " "$OTHER_HOST_DUMP_FILE" | head -1 | cut -d: -f1)
-    for reader in aaa_remote_ip aab_remote_host aac_remote_secure aad_remote_loopback aae_remote_own_host; do
+    for reader in aaa_remote_ip aab_remote_host aac_remote_secure aad_remote_loopback aae_remote_own_host aaf_remote_own_ip aag_remote_any_ip; do
         READER_LINE=$(grep -n "CREATE VIEW ${DB}\.${reader} " "$OTHER_HOST_DUMP_FILE" | head -1 | cut -d: -f1)
         if [ -z "$SRC_LINE" ] || [ -z "$READER_LINE" ]; then
             echo "FAIL: ${reader} or its source missing (src=$SRC_LINE reader=$READER_LINE)"
@@ -675,9 +680,33 @@ DROP TABLE ${DB}.aab_remote_host;
 DROP TABLE ${DB}.aac_remote_secure;
 DROP TABLE ${DB}.aad_remote_loopback;
 DROP TABLE ${DB}.aae_remote_own_host;
+DROP TABLE ${DB}.aaf_remote_own_ip;
+DROP TABLE ${DB}.aag_remote_any_ip;
 DROP TABLE ${DB}.zzz_remote_src;
 "
 rm -f "$OTHER_HOST_DUMP_FILE"
+
+echo '--- a remote() address the server cannot be asked about refuses the dump ---'
+# Without READ ON REMOTE the server cannot say whether 0.0.0.0 is itself, so the dump must not guess.
+NOREMOTE_USER="${DB}_noremote_user"
+$CLICKHOUSE_CLIENT -mq "
+CREATE TABLE ${DB}.zzz_remote_src (id UInt64) ENGINE = MergeTree ORDER BY id;
+CREATE VIEW ${DB}.aaa_remote_any_ip (id UInt64) AS SELECT * FROM remote('0.0.0.0:${CLICKHOUSE_PORT_TCP}', '${DB}', 'zzz_remote_src');
+DROP USER IF EXISTS ${NOREMOTE_USER};
+CREATE USER ${NOREMOTE_USER};
+GRANT ALL ON *.* TO ${NOREMOTE_USER};
+REVOKE READ ON REMOTE FROM ${NOREMOTE_USER};
+"
+if $CLICKHOUSE_CLIENT --user "$NOREMOTE_USER" --dump-schema="${DB}" > /dev/null 2>"$ERR_FILE"; then
+    echo 'FAIL: dump succeeded although the server could not be asked about the address'
+else
+    echo "unaskable remote() address refused: $(grep -c "Cannot tell whether remote address 0.0.0.0:${CLICKHOUSE_PORT_TCP} is the connected server" "$ERR_FILE")"
+fi
+$CLICKHOUSE_CLIENT -mq "
+DROP USER ${NOREMOTE_USER};
+DROP TABLE ${DB}.aaa_remote_any_ip;
+DROP TABLE ${DB}.zzz_remote_src;
+"
 
 echo '--- a cluster() argument reading the session database is refused, not rebound ---'
 # The server folded `currentDatabase()` against the session that ran the CREATE; the dump session's

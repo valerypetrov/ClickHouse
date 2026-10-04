@@ -99,6 +99,10 @@ aab_remote_host: no local edge
 aac_remote_secure: no local edge
 aad_remote_loopback: local edge
 aae_remote_own_host: local edge
+aaf_remote_own_ip: local edge
+aag_remote_any_ip: local edge
+--- a remote() address the server cannot be asked about refuses the dump ---
+unaskable remote() address refused: 1
 --- a cluster() argument reading the session database is refused, not rebound ---
 session-database cluster() argument refused: 1
 --- a cluster() argument reading the session user is refused too ---
