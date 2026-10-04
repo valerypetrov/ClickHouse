@@ -340,6 +340,16 @@ CREATE TABLE ${DB}.named_gates (variant UInt32, lowcardinality UInt32, fixedstri
 "
 echo "column named variant, suspicious-variant gate emitted: $(grep -c '^SET allow_suspicious_variant_types = 1;' "$DUMP_FILE")"
 echo "columns named lowcardinality, fixedstring, json and neighbor, their gates emitted: $(grep -cE '^SET (allow_suspicious_low_cardinality_types|allow_suspicious_fixed_string_types|allow_minmax_index_for_json|allow_deprecated_error_prone_window_functions) = 1;' "$DUMP_FILE")"
+# The replay instance keeps the LATERAL gate at its default 0, so only the dump's SET lets the view replay.
+make_dump "
+CREATE TABLE ${DB}.o (k Int64) ENGINE = MergeTree ORDER BY k;
+CREATE TABLE ${DB}.i (k Int64, v Int64) ENGINE = MergeTree ORDER BY k;
+SET allow_experimental_lateral_join = 1;
+CREATE MATERIALIZED VIEW ${DB}.mv_lateral ENGINE = Memory AS SELECT o.k AS k, l.c AS c FROM ${DB}.o AS o
+    LEFT JOIN LATERAL (SELECT count() AS c FROM ${DB}.i AS i WHERE i.k = o.k) AS l ON true;
+"
+echo "LATERAL materialized view, lateral gate emitted: $(grep -c '^SET allow_experimental_lateral_join = 1;' "$DUMP_FILE")"
+replay_local 'LATERAL materialized view' 'mv%'
 
 echo '--- a plain dump replays under every carrier-gate constraint ---'
 CONSTRAINT_DB="${DB}_sweep"
@@ -356,6 +366,7 @@ CREATE MATERIALIZED VIEW ${CONSTRAINT_DB}.mv_to TO ${CONSTRAINT_DB}.dst AS SELEC
 CREATE VIEW ${CONSTRAINT_DB}.v AS SELECT x FROM ${CONSTRAINT_DB}.mt;
 CREATE TABLE ${CONSTRAINT_DB}.named (time UInt32, ttl UInt32, variant UInt32, lowcardinality UInt32, fixedstring UInt32, json UInt32, neighbor UInt32, INDEX i json TYPE minmax) ENGINE = MergeTree ORDER BY time;
 CREATE VIEW ${CONSTRAINT_DB}.vj AS SELECT a.x FROM ${CONSTRAINT_DB}.mt AS a JOIN ${CONSTRAINT_DB}.mem AS b ON a.x = b.x;
+CREATE MATERIALIZED VIEW ${CONSTRAINT_DB}.mv_join ENGINE = Memory AS SELECT a.x AS x FROM ${CONSTRAINT_DB}.mt AS a JOIN ${CONSTRAINT_DB}.mem AS b ON a.x = b.x;
 CREATE TABLE ${CONSTRAINT_DB}.dk (k Dynamic, v UInt64) ENGINE = MergeTree ORDER BY tuple();
 CREATE VIEW ${CONSTRAINT_DB}.vdk AS SELECT a.v FROM ${CONSTRAINT_DB}.dk AS a JOIN ${CONSTRAINT_DB}.dk AS b ON a.k = b.k;
 CREATE TABLE ${CONSTRAINT_DB}.jm (j JSON, INDEX i j TYPE minmax) ENGINE = MergeTree ORDER BY tuple() SETTINGS allow_minmax_index_for_json = 1;
@@ -378,7 +389,7 @@ $CLICKHOUSE_CLIENT --multiquery --query "
     DROP DATABASE IF EXISTS ${CONSTRAINT_DB};
     DROP USER IF EXISTS ${CONSTRAINT_USER};
     DROP SETTINGS PROFILE IF EXISTS ${CONSTRAINT_PROFILE};
-    CREATE SETTINGS PROFILE ${CONSTRAINT_PROFILE} SETTINGS enable_time_time64_type = 0 CONST, allow_experimental_object_storage_queue_hive_partitioning = 0 CONST, allow_materialized_view_with_bad_select = 0 CONST, enable_time_series_table = 0 CONST, allow_kafka_offsets_storage_in_keeper = 0 CONST, enable_materialized_postgresql_table = 0 CONST, enable_funnel_functions = 0 CONST, allow_experimental_nlp_functions = 0 CONST, allow_experimental_hash_functions = 0 CONST, allow_simdjson = 0 CONST, allow_fuzz_query_functions = 0 CONST, allow_hyperscan = 0 CONST, allow_suspicious_codecs = 0 CONST, allow_deprecated_error_prone_window_functions = 0 CONST, allow_suspicious_low_cardinality_types = 0 CONST, allow_suspicious_fixed_string_types = 0 CONST, allow_suspicious_variant_types = 0 CONST, allow_minmax_index_for_json = 0 CONST, allow_suspicious_indices = 0 CONST, allow_url_wildcard_from_index_pages = 0 CONST, allow_suspicious_primary_key = 0 CONST, allow_suspicious_ttl_expressions = 0 CONST, allow_experimental_full_text_index = 0 CONST, allow_dynamic_type_in_join_keys = 0 CONST, enable_unique_key = 0 CONST, allow_experimental_ytsaurus_table_engine = 0 CONST, allow_experimental_paimon_storage_engine = 0 CONST, enable_nullable_tuple_type = 0 CONST;
+    CREATE SETTINGS PROFILE ${CONSTRAINT_PROFILE} SETTINGS enable_time_time64_type = 0 CONST, allow_experimental_object_storage_queue_hive_partitioning = 0 CONST, allow_materialized_view_with_bad_select = 0 CONST, enable_time_series_table = 0 CONST, allow_kafka_offsets_storage_in_keeper = 0 CONST, enable_materialized_postgresql_table = 0 CONST, enable_funnel_functions = 0 CONST, allow_experimental_nlp_functions = 0 CONST, allow_experimental_hash_functions = 0 CONST, allow_simdjson = 0 CONST, allow_fuzz_query_functions = 0 CONST, allow_hyperscan = 0 CONST, allow_suspicious_codecs = 0 CONST, allow_deprecated_error_prone_window_functions = 0 CONST, allow_suspicious_low_cardinality_types = 0 CONST, allow_suspicious_fixed_string_types = 0 CONST, allow_suspicious_variant_types = 0 CONST, allow_minmax_index_for_json = 0 CONST, allow_suspicious_indices = 0 CONST, allow_url_wildcard_from_index_pages = 0 CONST, allow_suspicious_primary_key = 0 CONST, allow_suspicious_ttl_expressions = 0 CONST, allow_experimental_full_text_index = 0 CONST, allow_dynamic_type_in_join_keys = 0 CONST, enable_unique_key = 0 CONST, allow_experimental_ytsaurus_table_engine = 0 CONST, allow_experimental_paimon_storage_engine = 0 CONST, enable_nullable_tuple_type = 0 CONST, allow_experimental_lateral_join = 0 CONST;
     CREATE USER ${CONSTRAINT_USER} SETTINGS PROFILE '${CONSTRAINT_PROFILE}';
     GRANT ALL ON *.* TO ${CONSTRAINT_USER};
 "

@@ -2367,6 +2367,7 @@ struct ReplayGateNeeds
     bool analyzer_group_by = false; /// a GROUP BY or window PARTITION BY in analyzed text
     bool analyzer_order_by = false; /// an ORDER BY or window ORDER BY in analyzed text
     bool analyzer_subquery = false; /// a subquery in analyzed text, which may be correlated
+    bool analyzer_lateral = false; /// a LATERAL join in analyzed text
     bool ordinary_database = false;
     bool materialized_postgresql_database = false;
     bool materialized_postgresql_table = false;
@@ -2778,7 +2779,7 @@ ReplayGateNeeds collectReplayGateNeeds(
             /// Cannot rule any gate out for a statement that does not parse, so keep them all.
             return {.explicit_uuid = true, .replicated_engine_arguments = true, .non_replicated_table = true, .materialized_view = true,
                     .parse_failed = true, .analyzer_group_by = true, .analyzer_order_by = true,
-                    .analyzer_subquery = true, .ordinary_database = true,
+                    .analyzer_subquery = true, .analyzer_lateral = true, .ordinary_database = true,
                     .materialized_postgresql_database = true,
                     .materialized_postgresql_table = true, .time_series_table = true,
                     .kafka_keeper_offsets = true, .nullable_tuple_type = true, .unique_key = true,
@@ -2822,10 +2823,11 @@ ReplayGateNeeds collectReplayGateNeeds(
             bool group_by = false;
             bool order_by = false;
             bool subquery = false;
+            bool lateral = false;
         };
         const auto scan_analyzed = [](const IAST & query)
         {
-            /// Each is read for its own clause: GROUP BY or PARTITION BY keys, ORDER BY keys, a correlated subquery.
+            /// Each is read for its own clause: GROUP BY or PARTITION BY keys, ORDER BY keys, a correlated subquery, a LATERAL join.
             AnalyzerCarriers carriers;
             forEachNode(query, [&carriers](const IAST & node)
             {
@@ -2846,6 +2848,8 @@ ReplayGateNeeds collectReplayGateNeeds(
                 }
                 else if (node.as<ASTSubquery>())
                     carriers.subquery = true;
+                else if (const auto * join = node.as<ASTTableJoin>())
+                    carriers.lateral |= join->lateral;
             });
             return carriers;
         };
@@ -2854,12 +2858,16 @@ ReplayGateNeeds collectReplayGateNeeds(
             needs.analyzer_group_by |= carriers.group_by;
             needs.analyzer_order_by |= carriers.order_by;
             needs.analyzer_subquery |= carriers.subquery;
+            needs.analyzer_lateral |= carriers.lateral;
         };
         /// Asks the source server which gates `select_query` really reads; without a query or an answer, the clauses decide.
         const auto add_gates_read = [&](const AnalyzerCarriers & carriers, const String & select_query)
         {
-            const SettingsChanges all_on = {{"allow_suspicious_types_in_group_by", Field(true)},
+            SettingsChanges all_on = {{"allow_suspicious_types_in_group_by", Field(true)},
                 {"allow_suspicious_types_in_order_by", Field(true)}, {"allow_experimental_correlated_subqueries", Field(true)}};
+            /// Only a LATERAL query names this gate, so a source server older than the gate is still asked about the others.
+            if (carriers.lateral)
+                all_on.setSetting("allow_experimental_lateral_join", Field(true));
             if (select_query.empty() || !analyzes_on_source(select_query, all_on))
             {
                 add_carriers(carriers);
@@ -2874,10 +2882,11 @@ ReplayGateNeeds collectReplayGateNeeds(
             needs.analyzer_group_by |= carriers.group_by && fails_without("allow_suspicious_types_in_group_by");
             needs.analyzer_order_by |= carriers.order_by && fails_without("allow_suspicious_types_in_order_by");
             needs.analyzer_subquery |= carriers.subquery && fails_without("allow_experimental_correlated_subqueries");
+            needs.analyzer_lateral |= carriers.lateral && fails_without("allow_experimental_lateral_join");
         };
         const auto has_carrier = [](const AnalyzerCarriers & carriers)
         {
-            return carriers.group_by || carriers.order_by || carriers.subquery;
+            return carriers.group_by || carriers.order_by || carriers.subquery || carriers.lateral;
         };
         if (create->select && !plain_view)
         {
@@ -3241,6 +3250,7 @@ String replaySettingsPrelude(
         {"allow_suspicious_types_in_group_by", &ReplayGateNeeds::analyzer_group_by},
         {"allow_suspicious_types_in_order_by", &ReplayGateNeeds::analyzer_order_by},
         {"allow_experimental_correlated_subqueries", &ReplayGateNeeds::analyzer_subquery},
+        {"allow_experimental_lateral_join", &ReplayGateNeeds::analyzer_lateral},
         {"allow_experimental_unique_key", &ReplayGateNeeds::unique_key},
         {"allow_experimental_ytsaurus_table_engine", &ReplayGateNeeds::ytsaurus_table},
         {"allow_experimental_paimon_storage_engine", &ReplayGateNeeds::paimon_table},

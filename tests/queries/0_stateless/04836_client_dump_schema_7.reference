@@ -104,7 +104,10 @@ OK: url table with a path wildcard replayed
 url table with a path wildcard, replayed objects: 1
 column named variant, suspicious-variant gate emitted: 0
 columns named lowcardinality, fixedstring, json and neighbor, their gates emitted: 0
+LATERAL materialized view, lateral gate emitted: 1
+OK: LATERAL materialized view replayed
+LATERAL materialized view, replayed objects: 1
 --- a plain dump replays under every carrier-gate constraint ---
 plain dump, join-key/minmax-JSON/suspicious-index/url-wildcard gates emitted: 0
 OK: constrained replay succeeded
-constrained replay tables present: 21
+constrained replay tables present: 22
