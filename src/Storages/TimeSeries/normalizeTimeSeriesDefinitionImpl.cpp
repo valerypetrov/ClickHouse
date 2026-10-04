@@ -540,7 +540,11 @@ namespace
             >= TimeSeriesVersion::MIN_WITH_SEPARATE_TAGS_MIN_MAX;
         if (const auto * value = get_new_value("store_min_time_and_max_time"); value && !SettingFieldBool{*value}.value)
             old_settings.removeSettings({"aggregate_min_time_and_max_time", "filter_by_min_time_and_max_time"});
-        else if (!separate_tags_min_max || external_tags_table)
+        else if (!separate_tags_min_max)
+            old_settings.removeSettings({"tags_deduplication_cache_size_bytes", "tags_deduplication_cache_expiration_seconds"});
+
+        /// The cache of the tags table isn't used with an external tags table.
+        if (external_tags_table)
             old_settings.removeSettings({"tags_deduplication_cache_size_bytes", "tags_deduplication_cache_expiration_seconds"});
     }
 

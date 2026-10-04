@@ -882,6 +882,18 @@ TEST_F(NormalizeTimeSeriesDefinitionTest, DeduplicationCacheSettings)
     copy = normalizeNewTableAs("CREATE TABLE db.copy AS db.src ENGINE = TimeSeries TAGS db.ext_tags", cached, params);
     EXPECT_FALSE(copy.contains("tags_deduplication_cache")) << copy;
 
+    /// Without `min_time` and `max_time` too: the cache can't see the rows removed from an external tags table.
+    NormalizeTimeSeriesDefinitionParams params_no_bounds;
+    params_no_bounds.external_target_columns[ViewTarget::Tags] = makeColumns({
+        makeColumn("id", "UInt64"),
+        makeColumn("metric_name", "LowCardinality(String)"),
+        makeColumn("tags", "Map(LowCardinality(String), String)")});
+    EXPECT_EQ(getExceptionCode([&] { normalizeNewTable("CREATE TABLE db.ts ENGINE = TimeSeries SETTINGS store_min_time_and_max_time = 0, tags_deduplication_cache_size_bytes = 10 TAGS db.ext_tags", params_no_bounds); }), ErrorCodes::INVALID_SETTING_VALUE);
+    cached = normalizeNewTable("CREATE TABLE db.src ENGINE = TimeSeries SETTINGS store_min_time_and_max_time = 0, tags_deduplication_cache_size_bytes = 10");
+    copy = normalizeNewTableAs("CREATE TABLE db.copy AS db.src ENGINE = TimeSeries TAGS db.ext_tags", cached, params_no_bounds);
+    EXPECT_TRUE(copy.contains("store_min_time_and_max_time = 0")) << copy;
+    EXPECT_FALSE(copy.contains("tags_deduplication_cache")) << copy;
+
     /// The settings of the tags cache are kept by a copy which inherits `store_min_time_and_max_time = 0` from the old table,
     /// also when that setting follows another setting removed from the copied ones.
     definition = normalizeNewTable(
