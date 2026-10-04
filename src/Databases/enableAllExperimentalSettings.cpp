@@ -26,6 +26,7 @@ const std::vector<std::string> & allExperimentalSettingNames()
         "allow_experimental_time_time64_type",
         "allow_experimental_nullable_tuple_type",
         "allow_experimental_correlated_subqueries",
+        "allow_experimental_lateral_join",
         "allow_experimental_unique_key",
         "allow_statistics",
         "allow_deprecated_error_prone_window_functions",
