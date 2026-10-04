@@ -244,10 +244,14 @@ Block makeBlock(
     return block;
 }
 
-void insertBlock(Block block, StorageTimeSeries & storage, const ContextMutablePtr & context)
+/// Calls `on_accepted` once the block is stored; for an async insert that is when its flush succeeds.
+void insertBlock(Block block, StorageTimeSeries & storage, const ContextMutablePtr & context, std::function<void()> on_accepted)
 {
     if (!block.rows())
+    {
+        on_accepted();
         return;
+    }
 
     auto insert_query = make_intrusive<ASTInsertQuery>();
     insert_query->table_id = storage.getStorageID();
@@ -266,7 +270,7 @@ void insertBlock(Block block, StorageTimeSeries & storage, const ContextMutableP
     {
         if (async_insert)
         {
-            auto result = queue->pushQueryWithBlock(ast, std::move(block), context);
+            auto result = queue->pushQueryWithBlock(ast, std::move(block), context, /*queued_data_tracker=*/ nullptr, std::move(on_accepted));
             if (result.status != AsynchronousInsertQueue::PushResult::OK)
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected result of pushing a block to the asynchronous insert queue");
 
@@ -292,6 +296,7 @@ void insertBlock(Block block, StorageTimeSeries & storage, const ContextMutableP
             executor.start();
             executor.push(std::move(block));
             executor.finish();
+            on_accepted();
         }
     }
     catch (...)
@@ -338,20 +343,11 @@ void PrometheusRemoteWriteProtocol::write(
     for (const auto & element : time_series)
         num_exemplars += element.exemplars_size();
 
-    try
+    insertBlock(std::move(block), *time_series_storage, getContext(), [num_exemplars]
     {
-        insertBlock(std::move(block), *time_series_storage, getContext());
-    }
-    catch (const Exception & e)
-    {
-        /// A timed out async insert stays in the queue and is flushed later, so its exemplars are counted too.
-        if (e.code() == ErrorCodes::ASYNC_INSERT_FLUSH_TIMEOUT && num_exemplars)
+        if (num_exemplars)
             ProfileEvents::increment(ProfileEvents::PrometheusRemoteWriteDroppedExemplars, num_exemplars);
-        throw;
-    }
-
-    if (num_exemplars)
-        ProfileEvents::increment(ProfileEvents::PrometheusRemoteWriteDroppedExemplars, num_exemplars);
+    });
 
     LOG_TRACE(
         log,
