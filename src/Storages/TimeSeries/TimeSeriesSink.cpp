@@ -7,6 +7,7 @@
 #include <Common/logger_useful.h>
 #include <Common/typeid_cast.h>
 #include <Core/Field.h>
+#include <Core/Settings.h>
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeMap.h>
@@ -36,6 +37,11 @@
 
 namespace DB
 {
+
+namespace Setting
+{
+    extern const SettingsString insert_deduplication_token;
+}
 
 namespace TimeSeriesSetting
 {
@@ -382,6 +388,14 @@ std::unique_ptr<TimeSeriesSink::TargetPipeline> TimeSeriesSink::createTargetPipe
     pipeline->context = Context::createCopy(getContext());
     pipeline->context->setCurrentQueryId(fmt::format("{}:{}", getContext()->getCurrentQueryId(), kind));
 
+    /// These pipelines are created again for each block, so a deduplication token is made unique per block.
+    if ((kind == ViewTarget::Tags) || (kind == ViewTarget::TagsMinMax))
+    {
+        const auto & token = getContext()->getSettingsRef()[Setting::insert_deduplication_token].value;
+        if (!token.empty())
+            pipeline->context->setSetting("insert_deduplication_token", fmt::format("{}:{}:{}", token, kind, input_block_number));
+    }
+
     InterpreterInsertQuery interpreter(
         insert_query,
         pipeline->context,
@@ -457,6 +471,8 @@ void TimeSeriesSink::consume(Chunk & chunk)
 
     if (insert_metric_families)
         consumeMetricFamilies(block);
+
+    ++input_block_number;
 }
 
 
@@ -751,15 +767,33 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
         tags_block = tags_deduplication_cache->filterOutWrittenRows(
             tags_block, /* key_column_index = */ tags_block.getPositionByName(TimeSeriesColumnNames::ID), pending_tags);
 
-    /// Tags are pushed first so that if the samples insert fails,
-    /// we don't end up with sample rows referencing IDs that were never written to the tags table.
+    /// A push is not a commit: a target pipeline can keep rows until `finish`. So the tags and the bounds of a block
+    /// are committed before its samples are pushed, which also covers a block with no new tags.
     if (tags_block.rows())
+    {
+        if (!tags_pipeline)
+            tags_pipeline = createTargetPipeline(ViewTarget::Tags, tags_block.cloneEmpty());
         tags_pipeline->push(std::move(tags_block));
+    }
+    if (tags_pipeline)
+    {
+        tags_pipeline->executor->finish();
+        tags_pipeline.reset();
+        /// The pending rows are in the table for sure now.
+        if (tags_deduplication_cache && !pending_tags.empty())
+            tags_deduplication_cache->markRowsAsWritten(std::move(pending_tags));
+    }
 
     /// Step 4a. Push the min/max time block. It is pushed for every block, including one whose tags rows
     /// were all skipped above, because the time range of a time series changes with every block.
     if (store_min_max_in_separate_table)
+    {
+        if (!tags_min_max_pipeline)
+            tags_min_max_pipeline = createTargetPipeline(ViewTarget::TagsMinMax, tags_min_max_block.cloneEmpty());
         tags_min_max_pipeline->push(std::move(tags_min_max_block));
+        tags_min_max_pipeline->executor->finish();
+        tags_min_max_pipeline.reset();
+    }
 
     /// Step 5. Assemble and push the samples block.
     if (total_samples)

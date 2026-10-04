@@ -99,10 +99,14 @@ private:
     /// True when min_time/max_time are stored in the "tags min max" target table instead of the "tags" table.
     bool store_min_max_in_separate_table = false;
 
+    /// Number of the blocks consumed so far.
+    size_t input_block_number = 0;
+
     /// Precomputed ExpressionActions for calculating the "id" column from a tags block.
     std::shared_ptr<ExpressionActions> calculate_id_actions;
     std::shared_ptr<ExpressionActions> convert_id_actions;
 
+    /// The tags and the min/max time pipelines are finished after each block and created again when needed.
     std::unique_ptr<TargetPipeline> tags_pipeline;
     std::unique_ptr<TargetPipeline> tags_min_max_pipeline;
     std::unique_ptr<TargetPipeline> samples_pipeline;
@@ -113,7 +117,7 @@ private:
     TimeSeriesDeduplicationCachePtr tags_deduplication_cache;
     TimeSeriesDeduplicationCachePtr metric_families_deduplication_cache;
 
-    /// Rows of the "tags" and "metric families" tables which this insert is going to write, they are marked as written when the insert is finished.
+    /// Rows of the "tags" and "metric families" tables which this insert is going to write, they are marked as written once they are committed.
     TimeSeriesDeduplicationCache::PendingRows pending_tags;
     TimeSeriesDeduplicationCache::PendingRows pending_metric_families;
 };
