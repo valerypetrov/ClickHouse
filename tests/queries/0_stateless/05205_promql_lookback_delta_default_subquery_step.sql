@@ -46,6 +46,10 @@ SELECT count() FROM prometheusQuery(ts, 'm', 1000740) SETTINGS promql_lookback_d
 SELECT count() FROM prometheusQuery(ts, 'm', 1000920) SETTINGS promql_lookback_delta = 0;
 SELECT value FROM prometheusQuery(ts, 'count_over_time(m[5m:])', 1000620) SETTINGS promql_default_subquery_step = 0;
 
+SELECT 'below 1 microsecond means the default:';
+SELECT count() FROM prometheusQuery(ts, 'm', 1000740) SETTINGS promql_lookback_delta = 0.0000009;
+SELECT value FROM prometheusQuery(ts, 'count_over_time(m[5m:])', 1000620) SETTINGS promql_default_subquery_step = 0.0000009;
+
 SELECT 'negative values are rejected:';
 SELECT * FROM prometheusQuery(ts, 'm', 1000740) SETTINGS promql_lookback_delta = -60; -- { serverError BAD_ARGUMENTS }
 SELECT * FROM prometheusQuery(ts, 'count_over_time(m[5m:])', 1000620) SETTINGS promql_default_subquery_step = -15; -- { serverError BAD_ARGUMENTS }

@@ -26,6 +26,9 @@ zero means the default:
 1
 0
 20
+below 1 microsecond means the default:
+1
+20
 negative values are rejected:
 the promql dialect:
 [('__name__','m'),('l','a')]	1970-01-12 13:59:00.000	1

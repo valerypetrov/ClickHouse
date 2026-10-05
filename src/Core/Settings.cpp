@@ -10497,7 +10497,7 @@ Sets the evaluation time to be used with promql dialect, as a Unix timestamp in 
 The lookback period of PromQL instant selectors, in seconds: an instant selector returns the latest sample newer than this.
 Applies to the `promql` dialect, the `prometheusQuery` and `prometheusQueryRange` table functions and the Prometheus HTTP API,
 where a non-zero `lookback_delta` URL parameter takes priority. It is the same as the `--query.lookback-delta` flag of Prometheus:
-0 means the default of 5 minutes.
+0 means the default of 5 minutes. The value is kept to the microsecond, so a value below 1 microsecond also means the default.
 )", PRIVATE_PREVIEW, \
         {"26.10", 300, 300, "New setting."}) \
     \
@@ -10505,6 +10505,7 @@ where a non-zero `lookback_delta` URL parameter takes priority. It is the same a
 The step of PromQL subqueries written without one, such as `max_over_time(rate(x[1m])[30m:])`, in seconds.
 Applies to the `promql` dialect, the `prometheusQuery` and `prometheusQueryRange` table functions and the Prometheus HTTP API.
 0 means the default of 15 seconds. Prometheus uses its global `evaluation_interval` here, which is 1 minute by default.
+The value is kept to the microsecond, so a value below 1 microsecond also means the default.
 )", PRIVATE_PREVIEW, \
         {"26.10", 15, 15, "New setting."}) \
     DECLARE(Bool, allow_experimental_paimon_storage_engine, false, R"(
