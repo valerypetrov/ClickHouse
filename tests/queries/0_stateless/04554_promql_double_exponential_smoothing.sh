@@ -28,7 +28,8 @@ INSERT INTO ts_tags VALUES
     ('00000000-0000-0000-0000-000000000001', 'm', {'instance':'host1'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
     ('00000000-0000-0000-0000-000000000002', 'm', {'instance':'host2'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
     ('00000000-0000-0000-0000-000000000003', 'm', {'instance':'host3'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
-    ('00000000-0000-0000-0000-000000000004', 'm', {'instance':'host4'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC'));
+    ('00000000-0000-0000-0000-000000000004', 'm', {'instance':'host4'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
+    ('00000000-0000-0000-0000-000000000005', 'm2', {'instance':'host5'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC'));
 
 INSERT INTO ts_data VALUES
     -- host1: 10, 20, 30 (linear -> smoothed value is the last value 30)
@@ -45,11 +46,23 @@ INSERT INTO ts_data VALUES
     ('00000000-0000-0000-0000-000000000003', toDateTime64(1700000000, 3, 'UTC'), 15),
     -- host4: only one sample within the window, so it is dropped (needs at least two)
     ('00000000-0000-0000-0000-000000000004', toDateTime64(1700000000, 3, 'UTC'), 7);
+
+-- m2 (host5): 1, 4, 2, 8, 5, 7, 3, 9, 6, 10 every 20 seconds from 1699999820 to 1700000000.
+INSERT INTO ts_data SELECT '00000000-0000-0000-0000-000000000005', toDateTime64(1699999820 + 20 * number, 3, 'UTC'), [1, 4, 2, 8, 5, 7, 3, 9, 6, 10][number + 1]
+FROM numbers(10);
 "
 
 promql_client()
 {
     $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 --dialect promql --promql_table ts --promql_evaluation_time 1700000000 "$@"
+}
+
+# range_query <query> <start> <end> <step>
+range_query()
+{
+    $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "
+        SELECT tags, arrayMap(x -> (toUnixTimestamp64Second(x.1), x.2), samples)
+        FROM prometheusQueryRange(ts, '$1', $2, $3, $4) ORDER BY ALL"
 }
 
 # Series come back in an unspecified order, so multi-series outputs are piped through `sort`.
@@ -65,13 +78,37 @@ echo "-- Invalid factors are rejected (must be in the open interval (0, 1))."
 promql_client -q "double_exponential_smoothing(m[3m], 1.5, 0.5)" 2>&1 | grep -o "expects smoothing factor in the open interval (0, 1)" | head -1
 promql_client -q "double_exponential_smoothing(m[3m], 0.5, 0)" 2>&1 | grep -o "expects trend factor in the open interval (0, 1)" | head -1
 
-echo "-- Only constant factors are supported: other scalar expressions are rejected with NOT_IMPLEMENTED."
-out=$(promql_client -q "double_exponential_smoothing(m[3m], scalar(sum(vector(0.5))), 0.5)" 2>&1)
-echo "$out" | grep -o "currently requires a constant smoothing factor" | head -1
-echo "$out" | grep -o "NOT_IMPLEMENTED" | head -1
-out=$(promql_client -q "double_exponential_smoothing(m[3m], 0.5, scalar(sum(vector(0.5))))" 2>&1)
-echo "$out" | grep -o "currently requires a constant trend factor" | head -1
-echo "$out" | grep -o "NOT_IMPLEMENTED" | head -1
+echo "-- The factors may be scalar expressions, like in Prometheus: the same results as with the constant factors above."
+promql_client -q "double_exponential_smoothing(m[3m], scalar(sum(vector(0.5))), 0.5)" | sort
+promql_client -q "double_exponential_smoothing(m[3m], 0.8, scalar(sum(vector(0.3))))" | sort
+
+echo "-- Computed factors out of range are rejected too."
+promql_client -q "double_exponential_smoothing(m[3m], scalar(sum(vector(1.5))), 0.5)" 2>&1 | grep -o "expects smoothing factor in the open interval (0, 1)" | head -1
+promql_client -q "double_exponential_smoothing(m[3m], 0.5, scalar(sum(vector(0))))" 2>&1 | grep -o "expects trend factor in the open interval (0, 1)" | head -1
+
+echo "-- A NaN factor is not an error, like in Prometheus. The result is NaN, but the trend factor is unused for two samples."
+promql_client -q "double_exponential_smoothing(m[3m], NaN, 0.5)" | sort
+promql_client -q "double_exponential_smoothing(m[3m], scalar(nothing), 0.5)" | sort
+promql_client -q "double_exponential_smoothing(m[3m], 0.5, scalar(nothing))" | sort
+promql_client -q "double_exponential_smoothing(m[2m], 0.5, scalar(nothing))" | sort
+
+echo "-- Like in Prometheus, the factors are checked only where a window has samples, so a selector without series is not an error."
+promql_client -q "double_exponential_smoothing(nothing[3m], 1.5, 0.5)" 2>&1
+
+echo "-- The factors are read at every step: sf = 0.2, 0.3, 0.4, 0.5 and tf = 0.8, 0.7, 0.6, 0.5 (Prometheus: 7.8, 2, 11.4, 6.5)."
+range_query "double_exponential_smoothing(m2[1m], (time() - 1699999900) / 200, (1700000100 - time()) / 200)" 1699999940 1700000000 20
+
+echo "-- sf = 0.4, 0.6, 0.8, 1: the last step has samples, so the query fails."
+range_query "double_exponential_smoothing(m2[1m], (time() - 1699999900) / 100, 0.5)" 1699999940 1700000000 20 2>&1 | grep -o "expects smoothing factor in the open interval (0, 1), got 1" | head -1
+
+echo "-- sf = 0.5, 1.5, 2.5: the windows of the last two steps have no samples, so it is not an error."
+range_query "double_exponential_smoothing(m2[1m], (time() - 1699999950) / 100, 0.5)" 1700000000 1700000200 100
+
+echo "-- A fixed @ works with a factor that is the same at every step, but not with a factor that varies per step."
+$CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "
+    SELECT tags, value FROM prometheusQuery(ts, 'double_exponential_smoothing(m[3m] @ 1700000000, scalar(sum(vector(0.5))), 0.5)', 1700000100)
+    ORDER BY ALL"
+range_query "double_exponential_smoothing(m[3m] @ 1700000000, time() / 3400000200, 0.5)" 1700000100 1700000200 100 2>&1 | grep -o "NOT_IMPLEMENTED" | head -1
 
 echo "-- The subquery window (1699999990, 1700000000] contains no 1m step, so the result is empty (and not an error about the factors)."
 promql_client -q "max_over_time(double_exponential_smoothing(m[3m], 0.5, 0.5)[10s:1m])" 2>&1
@@ -89,8 +126,8 @@ SELECT
 FROM
 (
     SELECT
-        timeSeriesDoubleExponentialSmoothingToGrid(100, 160, 30, 60, 0.3, 0.3)(ts, toFloat32(v)) AS f32,
-        timeSeriesDoubleExponentialSmoothingToGrid(100, 160, 30, 60, 0.3, 0.3)(ts, toFloat64(v)) AS f64
+        timeSeriesDoubleExponentialSmoothingToGrid(100, 160, 30, 60)(ts, toFloat32(v), 0.3, 0.3) AS f32,
+        timeSeriesDoubleExponentialSmoothingToGrid(100, 160, 30, 60)(ts, toFloat64(v), 0.3, 0.3) AS f64
     FROM
     (
         SELECT arrayJoin([(90, 1), (100, 4), (110, 2), (130, 7), (140, 5), (160, 11)]) AS p, toDateTime(p.1) AS ts, p.2 AS v

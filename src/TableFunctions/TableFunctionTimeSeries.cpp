@@ -290,7 +290,7 @@ Instant selectors, range selectors, label matchers (`=`, `!=`, `=~`, `!~`), offs
 
 **Note**: `histogram_quantile` uses linear interpolation on classic histogram buckets (identified by the `le` label). Native histograms are not supported. The `phi` (quantile level) argument must be a constant scalar. Expressions that vary per step, such as `histogram_quantile(time() / 1000, ...)`, are rejected with a `NOT_IMPLEMENTED` exception.
 
-**Note**: The smoothing factor and the trend factor of `double_exponential_smoothing` must be constant numbers. Other scalar expressions, such as `double_exponential_smoothing(v[5m], scalar(sf), 0.5)`, are rejected with a `NOT_IMPLEMENTED` exception.
+**Note**: The smoothing factor and the trend factor of `double_exponential_smoothing` can be any scalar expressions. Like in Prometheus, they are read at every step, and a factor outside the open interval (0, 1) is an error at a step where the window has samples. A factor that varies per step together with a fixed `@` on the range vector, such as `double_exponential_smoothing(v[5m] @ 1700000000, scalar(sf), 0.5)` in a range query, is rejected with a `NOT_IMPLEMENTED` exception.
 
 **Note**: `min_of(a, b)` and `max_of(a, b)` return the smaller or larger of two scalar values. Both arguments must be scalars.
 
@@ -373,7 +373,7 @@ Instant selectors, range selectors, label matchers (`=`, `!=`, `=~`, `!~`), offs
 
 **Note**: `histogram_quantile` uses linear interpolation on classic histogram buckets (identified by the `le` label). Native histograms are not supported. The `phi` (quantile level) argument must be a constant scalar. Expressions that vary per step, such as `histogram_quantile(time() / 1000, ...)`, are rejected with a `NOT_IMPLEMENTED` exception.
 
-**Note**: The smoothing factor and the trend factor of `double_exponential_smoothing` must be constant numbers. Other scalar expressions, such as `double_exponential_smoothing(v[5m], scalar(sf), 0.5)`, are rejected with a `NOT_IMPLEMENTED` exception.
+**Note**: The smoothing factor and the trend factor of `double_exponential_smoothing` can be any scalar expressions. Like in Prometheus, they are read at every step, and a factor outside the open interval (0, 1) is an error at a step where the window has samples. A factor that varies per step together with a fixed `@` on the range vector, such as `double_exponential_smoothing(v[5m] @ 1700000000, scalar(sf), 0.5)` in a range query, is rejected with a `NOT_IMPLEMENTED` exception.
 
 **Note**: `min_of(a, b)` and `max_of(a, b)` return the smaller or larger of two scalar values. Both arguments must be scalars.
 

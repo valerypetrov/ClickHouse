@@ -260,7 +260,7 @@ SQLQueryPiece applyAggregateFunctionOverRange(
     bool drop_metric_name,
     bool needs_cast_to_float64,
     SQLQueryPiece && argument_,
-    std::vector<ASTPtr> extra_aggregate_params,
+    ASTs extra_aggregate_arguments,
     ConverterContext & context)
 {
     auto node_range = context.node_range_getter.get(node);
@@ -278,6 +278,8 @@ SQLQueryPiece applyAggregateFunctionOverRange(
         return SQLQueryPiece{node, ResultType::INSTANT_VECTOR, StoreMethod::EMPTY}; /// The range vector is empty, so is the result.
 
     ASTs aggregate_function_arguments = getToGridAggregateFunctionArguments(argument, context);
+    for (auto & extra_argument : extra_aggregate_arguments)
+        aggregate_function_arguments.push_back(std::move(extra_argument));
 
     const auto * fixed_at_node = getFixedAtModifier(argument);
     const auto aggregation_range = getRangeAggregationRange(fixed_at_node, node_range, context);
@@ -291,19 +293,13 @@ SQLQueryPiece applyAggregateFunctionOverRange(
     if (has_group)
         builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Group));
 
-    /// <aggregate_function>(<timestamps>, <values>) AS values
-    auto aggregate_function = addParametersToAggregateFunction(
+    /// <aggregate_function>(<timestamps>, <values>[, <extra_arguments>]) AS values
+    ASTPtr aggregate_values = addParametersToAggregateFunction(
         makeASTFunction(ch_function_name, std::move(aggregate_function_arguments)),
         timeSeriesTimestampToAST(aggregation_range.start_time, context.result_timestamp_type),
         timeSeriesTimestampToAST(aggregation_range.end_time, context.result_timestamp_type),
         timeSeriesDurationToAST(aggregation_range.step, context.result_timestamp_type),
         timeSeriesDurationToAST(window, context.result_timestamp_type));
-
-    /// Append any extra scalar parameters after the (start, end, step, window) parameters.
-    for (auto & extra_param : extra_aggregate_params)
-        aggregate_function->parameters->children.push_back(std::move(extra_param));
-
-    ASTPtr aggregate_values = std::move(aggregate_function);
 
     if (needs_cast_to_float64)
     {
