@@ -497,12 +497,31 @@ namespace
                 tags = makeASTFunction("timeSeriesGroupToTags", make_intrusive<ASTIdentifier>(ColumnNames::Group));
                 tags->setAlias(ColumnNames::Tags);
 
-                /// values::Array(Nullable(Float64))
+                /// A step keeps only the arm of its newest sample (`sample_kinds`: 0 = float, 1 = histogram), as in Prometheus.
+                /// CAST(arrayMap((x, k) -> if(k = 0, x, NULL), values, sample_kinds), 'Array(Nullable(Float64))')
                 values = makeASTFunction(
                     "CAST",
-                    make_intrusive<ASTIdentifier>(ColumnNames::Values),
+                    makeASTFunction(
+                        "arrayMap",
+                        makeASTLambda({"x", "k"}, makeASTFunction(
+                            "if",
+                            makeASTFunction("equals", make_intrusive<ASTIdentifier>("k"), make_intrusive<ASTLiteral>(UInt64{0})),
+                            make_intrusive<ASTIdentifier>("x"),
+                            make_intrusive<ASTLiteral>(Field{}))),
+                        make_intrusive<ASTIdentifier>(ColumnNames::Values),
+                        make_intrusive<ASTIdentifier>(ColumnNames::SampleKinds)),
                     make_intrusive<ASTLiteral>("Array(Nullable(Float64))"));
-                histogram_values = make_intrusive<ASTIdentifier>(ColumnNames::HistogramValues);
+
+                /// arrayMap((h, k) -> if(k = 1, h, NULL), histogram_values, sample_kinds)
+                histogram_values = makeASTFunction(
+                    "arrayMap",
+                    makeASTLambda({"h", "k"}, makeASTFunction(
+                        "if",
+                        makeASTFunction("equals", make_intrusive<ASTIdentifier>("k"), make_intrusive<ASTLiteral>(UInt64{1})),
+                        make_intrusive<ASTIdentifier>("h"),
+                        make_intrusive<ASTLiteral>(Field{}))),
+                    make_intrusive<ASTIdentifier>(ColumnNames::HistogramValues),
+                    make_intrusive<ASTIdentifier>(ColumnNames::SampleKinds));
 
                 where = makeASTFunction(
                     "or",
