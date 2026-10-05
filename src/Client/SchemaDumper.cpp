@@ -1273,10 +1273,17 @@ void collectFunctionArgumentReferences(
             /// tryGetStringFromArgument), so an unrecognized argument is not dependency-free.
             if (!candidate && function->arguments && !function->arguments->children.empty()
                 && !function->arguments->children[0]->as<ASTIdentifier>())
-                throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-                    "Cannot statically resolve the dictionary/join argument of {} for --dump-schema: "
-                    "only table identifiers and string literals are supported, not arbitrary expressions",
-                    function->formatForErrorMessage());
+            {
+                if (auto name = tryFoldNameArgument(function->arguments->children[0], clusters.context))
+                    if (auto qualified = QualifiedTableName::tryParseFromString(*name))
+                        candidate = std::pair(qualified->database, qualified->table);
+                if (!candidate)
+                    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
+                        "Cannot statically resolve the dictionary/join argument of {} for --dump-schema: "
+                        "only table identifiers, string literals and constant expressions that read neither "
+                        "the session nor the server are supported",
+                        function->formatForErrorMessage());
+            }
         }
         else if (functionIsInOrGlobalInOperator(function->name))
         {

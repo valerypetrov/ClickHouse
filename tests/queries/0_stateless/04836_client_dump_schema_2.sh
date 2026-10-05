@@ -289,13 +289,37 @@ else
 fi
 rm -rf "$UNQUAL_SAMEDB_PATH"
 
-echo '--- a computed joinGet/dictionary argument fails clearly instead of being treated as dependency-free ---'
+echo '--- a constant-expression joinGet/dictHas argument is folded like the server does ---'
 COMPUTED_DICT_PATH="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_computed_dict"
 rm -rf "$COMPUTED_DICT_PATH"
 $CLICKHOUSE_LOCAL --path "$COMPUTED_DICT_PATH" --multiquery --query "
 CREATE DATABASE ${DB};
 CREATE TABLE ${DB}.zzz_join (k UInt64, v String) ENGINE = Join(ANY, LEFT, k);
+CREATE TABLE ${DB}.zzz_src (id UInt64, val String) ENGINE = MergeTree ORDER BY id;
+CREATE DICTIONARY ${DB}.zzz_dict (id UInt64, val String) PRIMARY KEY id SOURCE(CLICKHOUSE(TABLE 'zzz_src' DB '${DB}')) LAYOUT(FLAT()) LIFETIME(0);
 CREATE VIEW ${DB}.aaa_view AS SELECT joinGet(concat('${DB}', '.zzz_join'), 'v', 1::UInt64) AS v;
+CREATE VIEW ${DB}.aab_view AS SELECT dictHas(concat('${DB}', '.zzz_dict'), 1::UInt64) AS h;
+"
+DUMP=$($CLICKHOUSE_LOCAL --path "$COMPUTED_DICT_PATH" --dump-schema="${DB}" 2>"$ERR_FILE")
+join_line=$(echo "$DUMP" | grep -n 'zzz_join' | head -1 | cut -d: -f1)
+view_line=$(echo "$DUMP" | grep -n 'aaa_view' | head -1 | cut -d: -f1)
+dict_line=$(echo "$DUMP" | grep -n 'CREATE DICTIONARY' | head -1 | cut -d: -f1)
+reader_line=$(echo "$DUMP" | grep -n 'aab_view' | head -1 | cut -d: -f1)
+if [[ -n "$join_line" && -n "$view_line" && "$join_line" -lt "$view_line" && -n "$dict_line" && -n "$reader_line" && "$dict_line" -lt "$reader_line" ]]; then
+    echo 'OK: folded joinGet/dictHas dependencies ordered before their readers'
+else
+    echo 'FAIL: folded joinGet/dictHas dependencies missing or misordered'
+fi
+rm -rf "$COMPUTED_DICT_PATH"
+
+echo '--- a joinGet argument that reads the session database fails clearly instead of being treated as dependency-free ---'
+COMPUTED_DICT_PATH="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_session_dict"
+rm -rf "$COMPUTED_DICT_PATH"
+$CLICKHOUSE_LOCAL --path "$COMPUTED_DICT_PATH" --multiquery --query "
+CREATE DATABASE ${DB};
+CREATE TABLE ${DB}.zzz_join (k UInt64, v String) ENGINE = Join(ANY, LEFT, k);
+USE ${DB};
+CREATE VIEW ${DB}.aaa_view AS SELECT joinGet(concat(currentDatabase(), '.zzz_join'), 'v', 1::UInt64) AS v;
 "
 $CLICKHOUSE_LOCAL --path "$COMPUTED_DICT_PATH" --dump-schema="${DB}" > /dev/null 2>"$ERR_FILE"
 rc=$?

@@ -52,7 +52,9 @@ rebound dump emitted: 0
 --- a database-less reference is satisfied from the object database inside the dump set ---
 OK: zero exit code
 OK: unqualified dictionary ordered before its reader
---- a computed joinGet/dictionary argument fails clearly instead of being treated as dependency-free ---
+--- a constant-expression joinGet/dictHas argument is folded like the server does ---
+OK: folded joinGet/dictHas dependencies ordered before their readers
+--- a joinGet argument that reads the session database fails clearly instead of being treated as dependency-free ---
 OK: non-zero exit code
 NOT_IMPLEMENTED
 --- merge() naming a database outside the dump set warns instead of silently dropping the edge ---
