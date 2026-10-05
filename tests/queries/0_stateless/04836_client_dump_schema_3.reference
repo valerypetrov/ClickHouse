@@ -84,7 +84,10 @@ engine carrier dumped naming the collection: 1
 --- an RBAC-hidden named collection carrier is reported explicitly ---
 hidden carrier warned: 1
 --- Remote databases replay from database DDL, not proxy table DDL ---
-external source warning retained: 1
+graph-only proxy row warned about its source: 0
+outside-the-dump warnings for a proxy-only dump: 0
+reader warned about the source through the proxy: 1
+graph-only proxy row warned with its reader: 0
 Remote proxy table DDL emitted: 0
 RemoteSecure proxy table DDL emitted: 0
 OK: directory dump orders proxies and their source before readers
@@ -100,6 +103,7 @@ OK: proxy ordered before source database
 OK: replayed cycle directory dump in order
 replayed view resolves: 1
 --- directory dump orders a Cluster proxy source before its reader ---
+outside-the-dump warnings for a Cluster proxy-only dump: 0
 OK: source database ordered before the Cluster proxy reader (show_remote_databases_in_system_tables = 1)
 OK: source database ordered before the Cluster proxy reader (show_remote_databases_in_system_tables = 0)
 --- a simple dump does not read protected cluster or macro metadata ---

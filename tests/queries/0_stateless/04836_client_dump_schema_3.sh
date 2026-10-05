@@ -555,9 +555,20 @@ $CLICKHOUSE_CLIENT --multiquery --query "
 "
 if $CLICKHOUSE_CLIENT --show_remote_databases_in_system_tables=0 --dump-schema="${REMOTE_DB}" \
     > "$REMOTE_DUMP_FILE" 2>"$ERR_FILE"; then
-    echo "external source warning retained: $(grep -c "${REMOTE_DB}\.visible_table depends on ${REMOTE_SOURCE_DB}\.visible_table" "$ERR_FILE")"
+    # Only CREATE DATABASE ... ENGINE = Remote is replayed, and it needs no source table.
+    echo "graph-only proxy row warned about its source: $(grep -c "${REMOTE_DB}\.visible_table depends on" "$ERR_FILE")"
+    echo "outside-the-dump warnings for a proxy-only dump: $(grep -c 'outside the dumped database' "$ERR_FILE")"
 else
     echo "FAIL: remote database dump rejected: $(cat "$ERR_FILE")"
+fi
+
+# A reader of the proxy is replayed, so the source it reads through the proxy is its requirement.
+if $CLICKHOUSE_CLIENT --show_remote_databases_in_system_tables=0 --dump-schema="${REMOTE_READER_DB},${REMOTE_DB}" \
+    > "$REMOTE_DUMP_FILE" 2>"$ERR_FILE"; then
+    echo "reader warned about the source through the proxy: $(grep -c "${REMOTE_READER_DB}\.from_remote depends on ${REMOTE_SOURCE_DB}\.visible_table (through ${REMOTE_DB}\.visible_table)" "$ERR_FILE")"
+    echo "graph-only proxy row warned with its reader: $(grep -c "${REMOTE_DB}\.visible_table depends on" "$ERR_FILE")"
+else
+    echo "FAIL: remote reader dump rejected: $(cat "$ERR_FILE")"
 fi
 
 REMOTE_DATABASES="${REMOTE_READER_DB},${REMOTE_SECURE_DB},${REMOTE_DB},${REMOTE_SOURCE_DB}"
@@ -711,6 +722,11 @@ $CLICKHOUSE_CLIENT --multiquery --query "
     CREATE DATABASE ${CLUSTER_READER_DB};
     CREATE VIEW ${CLUSTER_READER_DB}.v AS SELECT * FROM ${CLUSTER_PROXY_DB}.t;
 "
+if $CLICKHOUSE_CLIENT --dump-schema="${CLUSTER_PROXY_DB}" > /dev/null 2>"$ERR_FILE"; then
+    echo "outside-the-dump warnings for a Cluster proxy-only dump: $(grep -c 'outside the dumped database' "$ERR_FILE")"
+else
+    echo "FAIL: Cluster proxy dump rejected: $(cat "$ERR_FILE")"
+fi
 for show_remote in 1 0; do
     rm -rf "$CLUSTER_DIR"
     if $CLICKHOUSE_CLIENT --show_remote_databases_in_system_tables=$show_remote \

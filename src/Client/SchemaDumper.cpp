@@ -2340,13 +2340,42 @@ void reportDependenciesOutsideDumpSet(
 {
     std::set<String> dumped_databases(target_databases.begin(), target_databases.end());
 
-    /// A set so the same missing dependency is reported once, in a deterministic order. Predefined
-    /// databases are skipped: they always exist wherever the dump is replayed.
-    std::set<std::tuple<String, String, String, String>> missing;
+    /// A proxy row is never replayed, so what it reads is required by the emitted objects that read through it.
+    std::map<std::pair<String, String>, const TableInfo *> proxy_rows;
     for (const auto & table : tables)
-        for (const auto & dependency : table.dependencies)
-            if (!dumped_databases.contains(dependency.first) && !DatabaseCatalog::isPredefinedDatabase(dependency.first))
-                missing.emplace(table.database, table.name, dependency.first, dependency.second);
+        if (!table.emit)
+            proxy_rows.emplace(std::pair(table.database, table.name), &table);
+
+    /// A map so the same missing dependency is reported once, in a deterministic order, naming the proxy
+    /// it is reached through if any. Predefined databases are skipped: they exist wherever the dump is replayed.
+    std::map<std::tuple<String, String, String, String>, std::optional<std::pair<String, String>>> missing;
+    for (const auto & table : tables)
+    {
+        if (!table.emit)
+            continue;
+        for (const auto & direct : table.dependencies)
+        {
+            std::set<std::pair<String, String>> visited;
+            std::vector<std::pair<String, String>> pending{direct};
+            while (!pending.empty())
+            {
+                auto dependency = pending.back();
+                pending.pop_back();
+                if (!visited.insert(dependency).second)
+                    continue;
+                if (auto it = proxy_rows.find(dependency); it != proxy_rows.end())
+                    pending.insert(pending.end(), it->second->dependencies.begin(), it->second->dependencies.end());
+                else if (!dumped_databases.contains(dependency.first) && !DatabaseCatalog::isPredefinedDatabase(dependency.first))
+                {
+                    auto [entry, inserted] = missing.try_emplace({table.database, table.name, dependency.first, dependency.second});
+                    if (dependency == direct)
+                        entry->second.reset();
+                    else if (inserted)
+                        entry->second = direct;
+                }
+            }
+        }
+    }
 
     /// A named collection is not in any database, so it is outside every dump set. Its values can
     /// include credentials, which a schema dump must not print, so it is reported rather than emitted.
@@ -2377,10 +2406,15 @@ void reportDependenciesOutsideDumpSet(
             for (const auto & reference : table.unresolved_references)
                 unresolved.emplace(table.database, table.name, reference);
 
-    for (const auto & [database, name, dependency_database, dependency_name] : missing)
+    for (const auto & [key, through] : missing)
+    {
+        const auto & [database, name, dependency_database, dependency_name] = key;
         err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " depends on "
-            << backQuoteIfNeed(dependency_database) << "." << backQuoteIfNeed(dependency_name)
-            << ", which is outside the dumped database(s) and will not be created by this dump.\n";
+            << backQuoteIfNeed(dependency_database) << "." << backQuoteIfNeed(dependency_name);
+        if (through)
+            err << " (through " << backQuoteIfNeed(through->first) << "." << backQuoteIfNeed(through->second) << ")";
+        err << ", which is outside the dumped database(s) and will not be created by this dump.\n";
+    }
 
     for (const auto & [database, name, collection] : collections)
         err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " depends on named collection "
