@@ -108,3 +108,4 @@ OK: system.macros is denied
 restricted dump table present: 1
 --- a same-server hostname in remote() is discovered as a local dependency ---
 OK: same-server hostname source dumped before reader
+OK: same-server hostname source dumped before reader without a system.clusters grant

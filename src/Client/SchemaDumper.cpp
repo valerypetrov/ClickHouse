@@ -108,6 +108,7 @@ namespace ErrorCodes
     extern const int DNS_ERROR;
     extern const int AUTHENTICATION_FAILED;
     extern const int REQUIRED_PASSWORD;
+    extern const int ACCESS_DENIED;
 }
 
 namespace
@@ -2116,14 +2117,24 @@ std::vector<TableInfo> fetchTables(
         if (!cached)
         {
             cached.emplace();
-            for (auto & host : fetchStringColumn(
-                     connection,
-                     timeouts,
-                     client_info,
-                     "SELECT hostName() UNION DISTINCT SELECT fqdn() UNION DISTINCT SELECT host_name FROM system.clusters WHERE is_local UNION DISTINCT SELECT host_address FROM system.clusters WHERE is_local",
-                     context->getSettingsRef()))
-                if (!host.empty())
-                    cached->insert(std::move(host));
+            auto add_hosts = [&](const String & query)
+            {
+                for (auto & host : fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef()))
+                    if (!host.empty())
+                        cached->insert(std::move(host));
+            };
+            add_hosts("SELECT hostName() UNION DISTINCT SELECT fqdn()");
+            try
+            {
+                add_hosts("SELECT host_name FROM system.clusters WHERE is_local "
+                          "UNION DISTINCT SELECT host_address FROM system.clusters WHERE is_local");
+            }
+            catch (const Exception & e)
+            {
+                /// Without a grant on system.clusters, `address_is_this_server` still asks the server about each address.
+                if (e.code() != ErrorCodes::ACCESS_DENIED || !clusters.address_is_this_server)
+                    throw;
+            }
         }
         return *cached;
     };

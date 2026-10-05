@@ -792,6 +792,30 @@ if $CLICKHOUSE_CLIENT --dump-schema="${SAME_HOST_DB}" > "$SAME_HOST_DUMP" 2>"$ER
 else
     echo "FAIL: same-server hostname dump rejected: $(cat "$ERR_FILE")"
 fi
+# A user without a grant on system.clusters still matches the server's own hostname.
+SAME_HOST_USER="${DB}_same_host_user"
+$CLICKHOUSE_CLIENT --multiquery --query "
+    DROP USER IF EXISTS ${SAME_HOST_USER};
+    CREATE USER ${SAME_HOST_USER};
+    GRANT SHOW DATABASES ON *.* TO ${SAME_HOST_USER};
+    GRANT SHOW TABLES, SHOW COLUMNS ON ${SAME_HOST_DB}.* TO ${SAME_HOST_USER};
+    GRANT SELECT ON system.columns TO ${SAME_HOST_USER};
+    GRANT SELECT ON system.databases TO ${SAME_HOST_USER};
+    GRANT SELECT ON system.settings TO ${SAME_HOST_USER};
+    GRANT SELECT ON system.tables TO ${SAME_HOST_USER};
+"
+if $CLICKHOUSE_CLIENT --user "$SAME_HOST_USER" --dump-schema="${SAME_HOST_DB}" > "$SAME_HOST_DUMP" 2>"$ERR_FILE"; then
+    SRC_LINE=$(grep -n "CREATE TABLE ${SAME_HOST_DB}\.zzz_src" "$SAME_HOST_DUMP" | head -1 | cut -d: -f1)
+    READER_LINE=$(grep -n "CREATE VIEW ${SAME_HOST_DB}\.aaa_reader" "$SAME_HOST_DUMP" | head -1 | cut -d: -f1)
+    if [ -n "$SRC_LINE" ] && [ -n "$READER_LINE" ] && [ "$SRC_LINE" -lt "$READER_LINE" ]; then
+        echo 'OK: same-server hostname source dumped before reader without a system.clusters grant'
+    else
+        echo "FAIL: same-server hostname dependency misordered without a system.clusters grant (src=$SRC_LINE reader=$READER_LINE)"
+    fi
+else
+    echo "FAIL: same-server hostname dump without a system.clusters grant rejected: $(cat "$ERR_FILE")"
+fi
+$CLICKHOUSE_CLIENT -q "DROP USER ${SAME_HOST_USER};"
 $CLICKHOUSE_CLIENT -q "DROP DATABASE ${SAME_HOST_DB} SYNC;"
 rm -f "$SAME_HOST_DUMP" "$ERR_FILE"
 
