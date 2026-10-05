@@ -2047,8 +2047,9 @@ std::vector<TableInfo> fetchTables(
             bool is_this_server = false;
             try
             {
+                /// The server reads its own address in place, so the probe never logs in as the default user.
                 const String query = String("SELECT toString(serverUUID()) FROM ") + (secure ? "remoteSecure(" : "remote(")
-                    + quoteString(address) + ", system.one)";
+                    + quoteString(address) + ", system.one) SETTINGS prefer_localhost_replica = 1";
                 const auto uuids = fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef());
                 is_this_server = !uuids.empty() && uuids.front() == own_uuid;
             }
