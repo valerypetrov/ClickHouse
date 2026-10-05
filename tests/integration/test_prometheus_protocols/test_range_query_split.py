@@ -197,6 +197,28 @@ def test_use_query_cache_of_request_caches_no_chunk(query):
     assert int(node.query("SELECT count() FROM system.query_cache")) == 0
 
 
+def test_use_query_cache_0_of_request_caches_no_chunk():
+    # The profile of the user turns use_query_cache on, so the request turning it off is a real change.
+    node.query("CREATE USER IF NOT EXISTS range_split_query_cache SETTINGS PROFILE 'default', use_query_cache = 1")
+    node.query("GRANT SELECT, CREATE TEMPORARY TABLE ON *.* TO range_split_query_cache")
+    node.query("SYSTEM DROP QUERY CACHE")
+    query = "sum by (mode) (rate(node_cpu_seconds_total[5m]))"
+    expected = query_range(query, H, H + 6 * 3600, 60)
+
+    params = {
+        "user": "range_split_query_cache",
+        "promql_range_query_split_interval": INTERVAL,
+        "promql_range_query_cache_min_age": 600,
+        "query_cache_ttl": 3600,
+    }
+    assert query_range(query, H, H + 6 * 3600, 60, {**params, "use_query_cache": 0}) == expected
+    assert int(node.query("SELECT count() FROM system.query_cache")) == 0
+
+    # Without it, the six chunks that cover a whole interval are cached.
+    assert query_range(query, H, H + 6 * 3600, 60, params) == expected
+    assert int(node.query("SELECT count() FROM system.query_cache")) == 6
+
+
 # Every hour has its own series, so each chunk has one series and the whole range seven.
 HOURLY = 'count_values("hour", floor(vector(time() / 3600)))'
 

@@ -98,6 +98,7 @@ namespace Setting
     extern const SettingsOverflowMode sort_overflow_mode;
     extern const SettingsOverflowMode timeout_overflow_mode;
     extern const SettingsOverflowMode transfer_overflow_mode;
+    extern const SettingsBool use_query_cache;
 }
 
 namespace TimeSeriesSetting
@@ -427,8 +428,10 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
     const Int64 step = evaluation_settings.step->value;
 
     const auto cache_min_age = settings[Setting::promql_range_query_cache_min_age].totalSeconds();
+    /// `use_query_cache` changed to 0 by the profile or the request caches no chunk.
     /// A limit with a non-throw overflow mode could cut a chunk short, and the query cache refuses such a query.
-    const bool can_cache = !readsSamplesAfterEvaluationTime(*query_tree->getRoot())
+    const bool can_cache = !(settings[Setting::use_query_cache].changed && !settings[Setting::use_query_cache])
+        && !readsSamplesAfterEvaluationTime(*query_tree->getRoot())
         && settings[Setting::read_overflow_mode] == OverflowMode::THROW
         && settings[Setting::read_overflow_mode_leaf] == OverflowMode::THROW
         && settings[Setting::group_by_overflow_mode] == OverflowMode::THROW
@@ -466,7 +469,7 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
         auto query_context = makeQueryContext();
         query_context->resetSettingsToDefaultValue({"promql_range_query_split_interval", "promql_range_query_cache_min_age"});
 
-        /// A chunk uses the query cache only if it's eligible, whatever `use_query_cache` of the request is.
+        /// A chunk uses the query cache only if it's eligible, even if the request sets `use_query_cache = 1`.
         bool use_query_cache = false;
         if (cache_min_age > 0)
         {
