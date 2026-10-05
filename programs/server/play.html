@@ -2620,6 +2620,8 @@ function freshResourceState()
 /// is safe to call for a background tab's stream too.
 function accumulateResourceEvents(state, events)
 {
+    /// Per host: { net, service }: the bytes received from the network, and the part that is protocol service traffic.
+    const received = new Map();
     for (const e of events)
     {
         if (e.thread_id !== '0') continue;
@@ -2638,9 +2640,17 @@ function accumulateResourceEvents(state, events)
         if (e.name === 'OSReadBytes' || e.name === 'OSWriteBytes' || e.name === 'ReadBufferFromS3Bytes'
             || e.name === 'WriteBufferFromS3Bytes' || e.name === 'ReadBufferFromAzureBytes' || e.name === 'WriteBufferFromAzureBytes'
             || e.name === 'ReadWriteBufferFromHTTPBytes' || e.name === 'WriteBufferFromHTTPBytes'
-            || e.name === 'NetworkReceiveBytes' || e.name === 'StreamingExchangeSendBytes' || e.name === 'StreamingExchangeReceiveBytes')
+            || e.name === 'StreamingExchangeSendBytes' || e.name === 'StreamingExchangeReceiveBytes')
         {
             state.io_bytes += value;
+            continue;
+        }
+
+        if (e.name === 'NetworkReceiveBytes' || e.name === 'NativeProtocolServiceReceiveBytes')
+        {
+            if (!received.has(e.host_name)) received.set(e.host_name, { net: 0, service: 0 });
+            const r = received.get(e.host_name);
+            if (e.name === 'NetworkReceiveBytes') r.net += value; else r.service += value;
             continue;
         }
 
@@ -2658,6 +2668,9 @@ function accumulateResourceEvents(state, events)
         else if (e.name === 'TemporaryDataOnDiskUsage')
             host.disk = value;
     }
+    /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
+    for (const r of received.values())
+        state.io_bytes += Math.max(r.net - r.service, 0);
     state.has = true;
 }
 

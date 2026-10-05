@@ -225,6 +225,7 @@ namespace ProfileEvents
     extern const Event WriteBufferFromHTTPBytes;
     extern const Event NetworkReceiveBytes;
     extern const Event NativeProtocolDataBytes;
+    extern const Event NativeProtocolServiceReceiveBytes;
     extern const Event StreamingExchangeSendBytes;
     extern const Event StreamingExchangeReceiveBytes;
 }
@@ -2223,11 +2224,14 @@ void ClientBase::onProfileEvents(Block & block)
         std::string_view http_write_bytes_name = ProfileEvents::getName(ProfileEvents::WriteBufferFromHTTPBytes);
         std::string_view net_read_bytes_name = ProfileEvents::getName(ProfileEvents::NetworkReceiveBytes);
         std::string_view native_data_bytes_name = ProfileEvents::getName(ProfileEvents::NativeProtocolDataBytes);
+        std::string_view native_service_receive_bytes_name = ProfileEvents::getName(ProfileEvents::NativeProtocolServiceReceiveBytes);
         /// `NetworkSendBytes` and `NetworkReceiveBytes` do not count the sockets of streaming exchanges.
         std::string_view exchange_send_bytes_name = ProfileEvents::getName(ProfileEvents::StreamingExchangeSendBytes);
         std::string_view exchange_receive_bytes_name = ProfileEvents::getName(ProfileEvents::StreamingExchangeReceiveBytes);
 
         HostToTimesMap thread_times;
+        /// Per host: the bytes received from the network, and the part of them that is protocol service traffic.
+        std::unordered_map<String, std::pair<UInt64, UInt64>> receive_bytes;
         for (size_t i = 0; i < rows; ++i)
         {
             auto thread_id = array_thread_id[i];
@@ -2261,10 +2265,14 @@ void ClientBase::onProfileEvents(Block & block)
             else if (
                 event_name == os_read_bytes_name || event_name == s3_read_bytes_name || event_name == azure_read_bytes_name
                 || event_name == os_write_bytes_name || event_name == s3_write_bytes_name || event_name == azure_write_bytes_name
-                || event_name == http_rw_bytes_name || event_name == http_write_bytes_name || event_name == net_read_bytes_name
+                || event_name == http_rw_bytes_name || event_name == http_write_bytes_name
                 || event_name == native_data_bytes_name || event_name == exchange_send_bytes_name
                 || event_name == exchange_receive_bytes_name)
                 thread_times[host_name].io_bytes += value;
+            else if (event_name == net_read_bytes_name)
+                receive_bytes[host_name].first += value;
+            else if (event_name == native_service_receive_bytes_name)
+                receive_bytes[host_name].second += value;
             /// The rows below are `GAUGE` snapshots and can also come in several rows for one host:
             /// from several queued snapshots of one source, or from several shards on one server.
             /// Summing would multiply one source's usage by the number of coalesced snapshots,
@@ -2279,6 +2287,10 @@ void ClientBase::onProfileEvents(Block & block)
             else if (event_name == "TemporaryDataOnDiskUsage")
                 thread_times[host_name].temp_data_on_disk_usage = std::max(thread_times[host_name].temp_data_on_disk_usage, static_cast<UInt64>(value));
         }
+        /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
+        for (const auto & [host_name, bytes] : receive_bytes)
+            if (bytes.first > bytes.second)
+                thread_times[host_name].io_bytes += bytes.first - bytes.second;
         progress_indication.updateThreadEventData(thread_times);
         progress_table.updateTable(block);
 

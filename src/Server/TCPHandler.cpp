@@ -161,6 +161,7 @@ namespace ProfileEvents
 {
     extern const Event NativeProtocolSend;
     extern const Event NativeProtocolDataBytes;
+    extern const Event NativeProtocolServiceReceiveBytes;
     extern const Event ReadTaskRequestsSent;
     extern const Event MergeTreeReadTaskRequestsSent;
     extern const Event MergeTreeAllRangesAnnouncementsSent;
@@ -1357,8 +1358,18 @@ bool TCPHandler::receivePacketsExpectData(QueryState & state)
             }
         }
 
+        const size_t packet_start = in->count();
         UInt64 packet_type = 0;
         readVarUInt(packet_type, *in);
+
+        /// Only a `Data` block with rows is query data: scalars come with the query itself.
+        /// A chunked packet also has a 4-byte size before it and a 4-byte end marker after it.
+        bool is_data = false;
+        SCOPE_EXIT({
+            if (!is_data)
+                ProfileEvents::increment(ProfileEvents::NativeProtocolServiceReceiveBytes,
+                    in->count() - packet_start + (proto_send_chunked_cl == "chunked" ? 8 : 0));
+        });
 
         switch (packet_type)
         {
@@ -1384,6 +1395,7 @@ bool TCPHandler::receivePacketsExpectData(QueryState & state)
                     empty_block = !processData(state, packet_type == Protocol::Client::Scalar);
                 if (empty_block)
                     state.read_all_data = true;
+                is_data = !empty_block && packet_type == Protocol::Client::Data;
                 return !empty_block;
             }
 

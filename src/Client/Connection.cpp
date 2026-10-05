@@ -69,6 +69,7 @@ namespace ProfileEvents
 {
     extern const Event DistributedConnectionReconnectCount;
     extern const Event DistributedConnectionConnectCount;
+    extern const Event NativeProtocolServiceReceiveBytes;
 }
 
 namespace DB
@@ -90,6 +91,18 @@ namespace ErrorCodes
     extern const int EMPTY_DATA_PASSED;
     extern const int LOGICAL_ERROR;
     extern const int TOO_LARGE_ARRAY_SIZE;
+}
+
+namespace
+{
+
+/// Counts bytes from a remote server that carry no query data, so the client's IO meter can leave them out.
+/// A chunked message also has a 4-byte size before it and a 4-byte end marker after it.
+void countServiceBytes(size_t bytes, bool chunked)
+{
+    ProfileEvents::increment(ProfileEvents::NativeProtocolServiceReceiveBytes, bytes + (chunked ? 8 : 0));
+}
+
 }
 
 Connection::~Connection()
@@ -415,6 +428,9 @@ void Connection::connect(const ConnectionTimeouts & timeouts)
 
         if (server_revision >= DBMS_MIN_PROTOCOL_VERSION_WITH_ADDENDUM)
             sendAddendum();
+
+        /// `in` is new, so this is the whole handshake.
+        countServiceBytes(in->count(), /*chunked=*/ false);
 
         if (proto_send_chunked == "chunked")
             out->enableChunked();
@@ -893,6 +909,7 @@ bool Connection::ping(const ConnectionTimeouts & timeouts)
         if (in->eof())
             return false;
 
+        const size_t reply_start = in->count();
         readVarUInt(pong, *in);
 
         /// Could receive late packets with progress. TODO: Maybe possible to fix.
@@ -908,6 +925,7 @@ bool Connection::ping(const ConnectionTimeouts & timeouts)
 
         if (pong != Protocol::Server::Pong)
             throwUnexpectedPacket(pong, "Pong", &timeout_setter);
+        countServiceBytes(in->count() - reply_start, proto_recv_chunked == "chunked");
     }
     catch (const Poco::Exception & e)
     {
@@ -972,6 +990,7 @@ TablesStatusResponse Connection::getTablesStatus(const ConnectionTimeouts & time
     out->finishChunk();
     out->next();
 
+    const size_t response_start = in->count();
     UInt64 response_type = 0;
     readVarUInt(response_type, *in);
 
@@ -982,6 +1001,7 @@ TablesStatusResponse Connection::getTablesStatus(const ConnectionTimeouts & time
 
     TablesStatusResponse response;
     response.read(*in, server_revision);
+    countServiceBytes(in->count() - response_start, proto_recv_chunked == "chunked");
     return response;
 }
 
@@ -1528,17 +1548,25 @@ Packet Connection::receivePacket()
         ensureConnected();
 
         Packet res;
+        size_t packet_start = in->count();
 
         /// Have we already read packet type?
         if (last_input_packet_type)
         {
             res.type = *last_input_packet_type;
             last_input_packet_type.reset();
+            packet_start -= getLengthOfVarUInt(res.type);
         }
         else
         {
             readVarUInt(res.type, *in);
         }
+
+        bool is_data = false;
+        SCOPE_EXIT({
+            if (!is_data)
+                countServiceBytes(in->count() - packet_start, proto_recv_chunked == "chunked");
+        });
 
         switch (res.type)
         {
@@ -1546,6 +1574,7 @@ Packet Connection::receivePacket()
             case Protocol::Server::Totals:
             case Protocol::Server::Extremes:
                 res.block = receiveData();
+                is_data = res.block.rows() > 0;
                 return res;
 
             case Protocol::Server::Exception:

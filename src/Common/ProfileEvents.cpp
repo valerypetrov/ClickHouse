@@ -203,6 +203,7 @@
     M(NetworkSendBytes, "Total number of bytes send to network. Only ClickHouse-related network interaction is included, not by 3rd party libraries.", ValueType::Bytes) \
     M(NativeProtocolSend, "Number of non-empty native protocol output buffer flushes.", ValueType::Number) \
     M(NativeProtocolDataBytes, "Number of bytes serialized for non-empty native protocol result packets (`Data`, `Totals`, `Extremes`), after compression and including protocol framing.", ValueType::Bytes) \
+    M(NativeProtocolServiceReceiveBytes, "Number of bytes received over the native protocol that carry no query data: the handshake and every packet but a block with rows (`Progress`, `ProfileEvents`, `Log`, empty blocks and others), with protocol framing. `clickhouse-client` subtracts it from `NetworkReceiveBytes` for its IO rate.", ValueType::Bytes) \
     M(FramingServiceBytes, "Number of bytes written to the response for framed service packets (`progress`, `log`, `profile_events`) rather than for query data. A subset of `NetworkSendBytes`: counted only when the framing writes straight into the socket, so it stays zero for a compressed response (`enable_http_compression`, `compress=1`), whose packets have no compressed size of their own.", ValueType::Bytes) \
     M(FilterPartsByVirtualColumnsMicroseconds, "Total time spent in filterPartsByVirtualColumns function.", ValueType::Microseconds) \
     \
