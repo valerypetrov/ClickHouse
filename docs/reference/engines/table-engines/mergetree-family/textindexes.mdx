@@ -551,6 +551,7 @@ Search tokens that the postprocessor maps to an empty string are ignored, i.e. t
 
 ¹ `LIKE` and `match` use direct read as a hint for the listed tokenizers, otherwise they fall back to brute-force scan.
 `LIKE` additionally supports evaluation by a dictionary scan (enabled via `use_text_index_like_evaluation_by_dictionary_scan`) for the `splitByNonAlpha` and `array` tokenizers without preprocessor or postprocessor, see section [LIKE/ILIKE queries](#like-ilike-queries-perf) below.
+The [`position` comparisons](#functions-example-position) are evaluated as `LIKE '%needle%'`, so this dictionary scan also serves them, including with the `array` tokenizer.
 
 ² `ILIKE` is only supported via evaluation by a dictionary scan (`use_text_index_like_evaluation_by_dictionary_scan = 1`, `splitByNonAlpha` or `array` tokenizer).
 There is no fallback to using the index as a hint for patterns the dictionary scan does not support: if the setting is disabled or the tokenizer is not in the supported set, the index is not used for `ILIKE`.
