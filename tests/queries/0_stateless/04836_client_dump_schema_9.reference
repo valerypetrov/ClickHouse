@@ -1,0 +1,6 @@
+--- the probe logs in as the remote() call does ---
+OK: remote() refuses the default user
+OK: source dumped before aaa_login_reader
+OK: source dumped before aab_collection_reader
+--- a masked password the address needs refuses the dump ---
+masked login refused: 1

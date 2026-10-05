@@ -519,6 +519,15 @@ struct ClusterNames
     std::set<String> local;
 };
 
+/// The user and password a `remote*` call logs in with.
+struct RemoteLogin
+{
+    String user = "default";
+    String password;
+    /// The password is masked as [HIDDEN] for this session or is not a constant, so it cannot be replayed.
+    bool unreadable = false;
+};
+
 /// Cluster and server metadata used to classify distributed references as local dependencies.
 struct ClusterLocality
 {
@@ -538,8 +547,9 @@ struct ClusterLocality
     std::function<const std::map<String, std::map<String, String>> &()> named_collections;
     /// Server hostnames and local cluster replica addresses considered local dependencies.
     std::function<const std::set<String> &()> local_hostnames;
-    /// Asks the server whether a `remote*` address reaches the server itself. Not set for clickhouse-local.
-    std::function<bool(const String & address, bool secure)> address_is_this_server;
+    /// Asks the server whether a `remote*` address reaches the server itself, logging in as the call does.
+    /// Not set for clickhouse-local.
+    std::function<bool(const String & address, bool secure, const RemoteLogin & login)> address_is_this_server;
     /// For mirroring the server's constant folding of `cluster*` name/table arguments.
     ContextPtr context;
 };
@@ -656,7 +666,7 @@ bool isRemoteFunctionName(const String & name)
 
 /// Whether one replica of a `remote*` pattern is the server itself, on its port: a loopback address or name it reports
 /// as its own, or else what the server answers about the address, so its interface IPs and other aliases count too.
-bool remoteAddressIsLocal(const String & address, bool secure, const ClusterLocality & clusters)
+bool remoteAddressIsLocal(const String & address, bool secure, const RemoteLogin & login, const ClusterLocality & clusters)
 {
     bool has_explicit_port = address.starts_with('[') ? address.contains("]:") : address.contains(':');
     if (has_explicit_port && clusters.treat_local_port_as_remote)
@@ -682,16 +692,16 @@ bool remoteAddressIsLocal(const String & address, bool secure, const ClusterLoca
             if (equalsCaseInsensitive(host, local_host))
                 return true;
     }
-    return clusters.address_is_this_server && clusters.address_is_this_server(address, secure);
+    return clusters.address_is_this_server && clusters.address_is_this_server(address, secure, login);
 }
 
 /// Whether any replica of a `remote*` address pattern is read without a connection.
-bool remoteDescriptionHasLocalReplica(const String & pattern, bool secure, const ClusterLocality & clusters)
+bool remoteDescriptionHasLocalReplica(const String & pattern, bool secure, const RemoteLogin & login, const ClusterLocality & clusters)
 {
     size_t max_addresses = clusters.context->getSettingsRef()[Setting::table_function_remote_max_addresses];
     for (const auto & shard : parseRemoteDescription(pattern, 0, pattern.size(), ',', max_addresses))
         for (const auto & replica : parseRemoteDescription(shard, 0, shard.size(), '|', max_addresses))
-            if (remoteAddressIsLocal(replica, secure, clusters))
+            if (remoteAddressIsLocal(replica, secure, login, clusters))
                 return true;
     return false;
 }
@@ -704,6 +714,7 @@ struct RemoteCollectionTarget
     String table;
     /// `remote(nc, database = mysql(...))`: the target is a table function, so there is no table edge.
     bool target_is_table_function = false;
+    RemoteLogin login;
 };
 
 /// The collection a `remote*` identifier first argument names: `parseRemoteFunctionArguments` tries
@@ -783,10 +794,19 @@ RemoteCollectionTarget resolveRemoteNamedCollection(
         String key;
         if (!tryGetIdentifierNameInto(equals->arguments->children[0], key))
             continue;
-        /// Credentials and the sharding key name no table and reach no address.
-        if (key == "user" || key == "username" || key == "password" || key == "sharding_key")
+        /// The sharding key names no table and reaches no address.
+        if (key == "sharding_key")
             continue;
         const ASTPtr & value = equals->arguments->children[1];
+        if (key == "user" || key == "username" || key == "password")
+        {
+            /// Credentials name no table either; an unreadable one only stops the locality probe from replaying it.
+            if (auto text = tryReadNamedCollectionValue(value, clusters))
+                values[key] = *text;
+            else
+                target.login.unreadable = true;
+            continue;
+        }
         if (const auto * value_function = value->as<ASTFunction>();
             value_function && TableFunctionFactory::instance().isTableFunctionName(value_function->name))
         {
@@ -828,7 +848,83 @@ RemoteCollectionTarget resolveRemoteNamedCollection(
     else
         target.database = "default";
     target.table = get("table");
+    /// `username` wins over `user`, the way `getAnyOrDefault` reads them.
+    if (values.contains("username"))
+        target.login.user = get("username");
+    else if (values.contains("user"))
+        target.login.user = get("user");
+    target.login.password = get("password");
+    if (target.login.user == "[HIDDEN]" || target.login.password == "[HIDDEN]")
+        target.login.unreadable = true;
     return target;
+}
+
+/// Reads the user and password of a positional `remote*` call the way `parseRemoteFunctionArguments` does.
+RemoteLogin readRemotePositionalLogin(const ASTFunction & function, const ClusterLocality & clusters)
+{
+    ASTs args;
+    for (const auto & argument : function.arguments->children)
+        if (!argument->as<ASTSetQuery>())
+            args.push_back(argument);
+
+    auto string_literal = [](const ASTPtr & node) -> std::optional<String>
+    {
+        const auto * literal = node->as<ASTLiteral>();
+        if (literal && literal->value.getType() == Field::Types::String)
+            return literal->value.safeGet<String>();
+        return std::nullopt;
+    };
+
+    RemoteLogin login;
+    size_t arg_num = 1;
+    if (arg_num < args.size())
+    {
+        const auto * table_function = args[arg_num]->as<ASTFunction>();
+        if (table_function && TableFunctionFactory::instance().isTableFunctionName(table_function->name))
+            ++arg_num;
+        else
+        {
+            /// `db.table` is one argument and `db, table` two, so the login starts after either.
+            std::optional<String> database;
+            if (const auto * identifier = args[arg_num]->as<ASTIdentifier>())
+                database = identifier->name();
+            else
+                database = tryReadNamedCollectionValue(args[arg_num], clusters);
+            if (!database)
+            {
+                login.unreadable = true;
+                return login;
+            }
+            auto qualified = QualifiedTableName::tryParseFromString(*database);
+            arg_num += (qualified && !qualified->database.empty()) ? 1 : 2;
+        }
+    }
+
+    bool sharding_key = false;
+    bool password_read = false;
+    if (arg_num < args.size())
+    {
+        if (auto user = string_literal(args[arg_num]))
+        {
+            login.user = *user;
+            ++arg_num;
+        }
+        else if (String name; arg_num + 1 < args.size() && string_literal(args[arg_num + 1])
+                 && tryGetIdentifierNameInto(args[arg_num], name))
+        {
+            login.user = name;
+            login.password = *string_literal(args[arg_num + 1]);
+            password_read = true;
+        }
+        else
+            sharding_key = true;
+    }
+    if (!sharding_key && !password_read && arg_num < args.size())
+        if (auto password = string_literal(args[arg_num]))
+            login.password = *password;
+
+    login.unreadable = login.password == "[HIDDEN]";
+    return login;
 }
 
 /// Whether a `remote*` call has a replica the server reads without a connection, the way
@@ -841,14 +937,17 @@ bool remoteFunctionHasLocalReplica(const ASTFunction & function, const ClusterLo
     if (tryGetIdentifierNameInto(first, name))
     {
         if (const auto * collection = tryGetRemoteNamedCollection(function, name, clusters))
-            return remoteDescriptionHasLocalReplica(
-                resolveRemoteNamedCollection(function, name, *collection, clusters).addresses, secure, clusters);
+        {
+            auto target = resolveRemoteNamedCollection(function, name, *collection, clusters);
+            return remoteDescriptionHasLocalReplica(target.addresses, secure, target.login, clusters);
+        }
         return clusters.names().local.contains(name);
     }
     const auto * literal = first->as<ASTLiteral>();
     if (!literal || literal->value.getType() != Field::Types::String)
         return false;
-    return remoteDescriptionHasLocalReplica(literal->value.safeGet<String>(), secure, clusters);
+    return remoteDescriptionHasLocalReplica(
+        literal->value.safeGet<String>(), secure, readRemotePositionalLogin(function, clusters), clusters);
 }
 
 /// Whether a `cluster*`/`remote*` call reads its table argument on this instance.
@@ -2038,35 +2137,50 @@ std::vector<TableInfo> fetchTables(
     clusters.treat_local_port_as_remote = context->getApplicationType() == Context::ApplicationType::LOCAL;
     if (!clusters.treat_local_port_as_remote)
         clusters.address_is_this_server
-            = [&, own_uuid = String{}, cached = std::map<std::pair<String, bool>, bool>{}](const String & address, bool secure) mutable
+            = [&, own_uuid = String{}, cached = std::map<std::tuple<String, bool, String, String, bool>, bool>{}](
+                  const String & address, bool secure, const RemoteLogin & login) mutable
         {
-            if (auto it = cached.find({address, secure}); it != cached.end())
+            const auto key = std::tuple(address, secure, login.user, login.password, login.unreadable);
+            if (auto it = cached.find(key); it != cached.end())
                 return it->second;
             if (own_uuid.empty())
                 own_uuid = fetchStringColumn(
                     connection, timeouts, client_info, "SELECT toString(serverUUID())", context->getSettingsRef()).at(0);
+            /// The probe logs in as the call does; a password it cannot read falls back to remote()'s default user.
+            const RemoteLogin probe_login = login.unreadable ? RemoteLogin{} : login;
             bool is_this_server = false;
             try
             {
-                /// The server reads its own address in place, so the probe never logs in as the default user.
+                /// The server reads its own address in place without a login, and connects to any other one.
                 const String query = String("SELECT toString(serverUUID()) FROM ") + (secure ? "remoteSecure(" : "remote(")
-                    + quoteString(address) + ", system.one) SETTINGS prefer_localhost_replica = 1";
+                    + quoteString(address) + ", 'system', 'one', " + quoteString(probe_login.user) + ", "
+                    + quoteString(probe_login.password) + ") SETTINGS prefer_localhost_replica = 1";
                 const auto uuids = fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef());
                 is_this_server = !uuids.empty() && uuids.front() == own_uuid;
             }
             catch (const Exception & e)
             {
-                /// These errors mean the server went over the network and found no server, or another one.
-                static const std::set<int> not_this_server = {ErrorCodes::NO_REMOTE_SHARD_AVAILABLE,
+                /// These errors mean the server went over the network and found no server.
+                static const std::set<int> unreachable = {ErrorCodes::NO_REMOTE_SHARD_AVAILABLE,
                     ErrorCodes::ALL_CONNECTION_TRIES_FAILED, ErrorCodes::NETWORK_ERROR, ErrorCodes::SOCKET_TIMEOUT,
-                    ErrorCodes::DNS_ERROR, ErrorCodes::AUTHENTICATION_FAILED, ErrorCodes::REQUIRED_PASSWORD};
-                if (!not_this_server.contains(e.code()))
+                    ErrorCodes::DNS_ERROR};
+                /// A refused call login means the call cannot read there either; a refused default login proves nothing.
+                const bool login_refused = e.code() == ErrorCodes::AUTHENTICATION_FAILED || e.code() == ErrorCodes::REQUIRED_PASSWORD;
+                if (login_refused && login.unreadable)
+                    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
+                        "Cannot tell whether remote address {} is the connected server for --dump-schema, "
+                        "so a dependency on its tables may be missed: the address refuses the default user, and this "
+                        "session cannot read the login the call uses (its password is shown as [HIDDEN], or an argument "
+                        "is computed). Re-run from a session allowed to display secrets, with "
+                        "format_display_secrets_in_show_and_select = 1",
+                        address);
+                if (!unreachable.contains(e.code()) && !login_refused)
                     throw Exception(ErrorCodes::NOT_IMPLEMENTED,
                         "Cannot tell whether remote address {} is the connected server for --dump-schema, "
                         "so a dependency on its tables may be missed: asking the server failed: {}",
                         address, e.message());
             }
-            cached.emplace(std::pair{address, secure}, is_this_server);
+            cached.emplace(key, is_this_server);
             return is_this_server;
         };
     using NamedCollectionMap = std::map<String, std::map<String, String>>;
