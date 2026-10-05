@@ -7,6 +7,7 @@
 #include <Columns/ColumnArray.h>
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnVector.h>
+#include <DataTypes/DataTypeAggregateFunction.h>
 #include <DataTypes/DataTypesDecimal.h>
 
 #include <AggregateFunctions/TimeSeries/AggregateFunctionTimeseriesBase.h>
@@ -330,6 +331,22 @@ public:
     typename Traits::GridScaleIntervalType getAggregatorWindow() const
     {
         return aggregator_window;
+    }
+
+    /// All spellings of one mode (none, 0 or false; any non-zero value) have the same state, so they share one type.
+    DataTypePtr getNormalizedStateType() const override
+    {
+        const Array & parameters = this->getParameters();
+        Array normalized_parameters(parameters.begin(), parameters.begin() + std::min<size_t>(parameters.size(), 4));
+        if (exact_rate)
+            normalized_parameters.emplace_back(UInt64{1});
+
+        DataTypes normalized_argument_types;
+        normalized_argument_types.reserve(this->argument_types.size());
+        for (const auto & argument_type : this->argument_types)
+            normalized_argument_types.emplace_back(argument_type->getNormalizedType());
+
+        return std::make_shared<DataTypeAggregateFunction>(this->shared_from_this(), normalized_argument_types, normalized_parameters);
     }
 
 private:

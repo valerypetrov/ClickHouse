@@ -81,5 +81,13 @@ SELECT finalizeAggregation(exact_state), finalizeAggregation(default_state) FROM
 
 -- A state of one mode is not accepted by the function of the other one.
 SELECT timeSeriesRateToGridMerge(100, 120, 10, 20)(exact_state) FROM t_promql_exact_rate_state; -- { serverError ILLEGAL_TYPE_OF_ARGUMENT }
+SELECT timeSeriesRateToGridMerge(100, 120, 10, 20, 0)(exact_state) FROM t_promql_exact_rate_state; -- { serverError ILLEGAL_TYPE_OF_ARGUMENT }
+
+-- Other spellings of a mode (no parameter, 0 or false; any non-zero value) have the same state type.
+INSERT INTO t_promql_exact_rate_state
+SELECT 2, timeSeriesRateToGridState(100, 120, 10, 20, -1)(ts, val), timeSeriesRateToGridState(100, 120, 10, 20, 0)(ts, val)
+FROM values('ts UInt32, val Float64', (90, 0), (100, 10), (110, 20), (115, 25), (120, 40));
+SELECT id, timeSeriesRateToGridMerge(100, 120, 10, 20, true)(exact_state), timeSeriesRateToGridMerge(100, 120, 10, 20, false)(default_state)
+FROM t_promql_exact_rate_state GROUP BY id ORDER BY id;
 
 DROP TABLE t_promql_exact_rate_state;
