@@ -30,6 +30,8 @@ SELECT timeSeriesAvgOverGroupMerge(s) FROM (SELECT timeSeriesAvgOverGroupState(x
 SELECT timeSeriesAvgOverGroupMerge(s) FROM (SELECT timeSeriesAvgOverGroupState(x) AS s FROM values('k UInt8, x Float64', (1, inf), (2, 1e308), (2, 1e308)) GROUP BY k);
 SELECT abs(timeSeriesAvgOverGroup(1e308) / 1e308 - 1) < 1e-12 FROM numbers(100000) SETTINGS max_threads = 4, max_block_size = 1000;
 SELECT finalizeAggregation(CAST(unhex(hex(timeSeriesAvgOverGroupState(x))), 'AggregateFunction(timeSeriesAvgOverGroup, Float64)')) FROM values('x Float64', 1e308, 1e308, 4e307);
+-- Only the second state overflows and becomes a mean: the merge stays within the rounding of the largest values (1 ulp of 1e308 is 2e292).
+SELECT abs(timeSeriesAvgOverGroupMerge(s)) < 1e292 FROM (SELECT timeSeriesAvgOverGroupState(x) AS s FROM values('k UInt8, x Float64', (1, 1e308), (2, -1e308), (2, -9.988465674311579e307), (2, 9.988465674311579e307)) GROUP BY k);
 
 SELECT '-- PromQL avg';
 
