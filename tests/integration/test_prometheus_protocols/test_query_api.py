@@ -401,11 +401,27 @@ def test_generated_sql_always_runs_with_materialized_cte():
 def test_ignored_params():
     query = 'foo{shape="square"}'
     expected = execute_query_via_http_api(node.ip_address, 9093, "/api/v1/query", query, timestamp=150)
-    for name, value in [("trace", "1"), ("round_digits", "3"), ("partial_response", "true"), ("dedup", "true")]:
+    for name, value in [("trace", "1"), ("round_digits", "3")]:
         assert (
             execute_query_via_http_api(node.ip_address, 9093, "/api/v1/query", query, timestamp=150, params={name: value})
             == expected
         )
+
+
+# Thanos' deduplication and partial responses are not implemented, so `dedup` and `partial_response=true` are rejected.
+def test_thanos_params():
+    query = 'foo{shape="square"}'
+    expected = execute_query_via_http_api(node.ip_address, 9093, "/api/v1/query", query, timestamp=150)
+    assert execute_query_via_http_api(node.ip_address, 9093, "/api/v1/query", query, timestamp=150, params={"partial_response": "false"}) == expected
+    for name, value, error in [
+        ("dedup", "true", "The 'dedup' parameter is not supported"),
+        ("dedup", "false", "The 'dedup' parameter is not supported"),
+        ("partial_response", "true", "The 'partial_response=true' parameter is not supported"),
+    ]:
+        response = get_response_to_http_api_query(node.ip_address, 9093, "/api/v1/query", query, 150, params={name: value})
+        assert response.status_code == 400
+        assert response.json()["errorType"] == "bad_data"
+        assert error in extract_error_from_http_api_response(response)
 
 
 # `nocache=1` bypasses the query cache that a settings profile enables.
