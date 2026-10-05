@@ -19,7 +19,8 @@ CREATE TABLE ts_nh ENGINE = TimeSeries SETTINGS store_native_histograms = 1;
 INSERT INTO ts_nh (metric_name, tags, samples) VALUES
     ('pure_float', map('job', 'a'), [(toDateTime64(100, 3), 1.5), (toDateTime64(110, 3), 2.5)]),
     ('mixed_float_newer', map('job', 'c'), [(toDateTime64(110, 3), 42)]),
-    ('mixed_hist_newer', map('job', 'd'), [(toDateTime64(100, 3), 3.25)]);
+    ('mixed_hist_newer', map('job', 'd'), [(toDateTime64(100, 3), 3.25)]),
+    ('stale_after_float', map('job', 'f'), [(toDateTime64(100, 3), 3.25)]);
 
 -- The `histograms` outer column carries one tuple per sample:
 -- (timestamp, flags, schema, zero_threshold, count, sum, zero_count, positive_spans, positive_values,
@@ -29,7 +30,8 @@ INSERT INTO ts_nh (metric_name, tags, histograms) VALUES
     ('pure_hist', map('job', 'b'), [(toDateTime64(110, 3), 0, 0, 0.001, 10, 25.5, 2, [(0, 2), (1, 1)], [3, 2, 3], [], [], [], 10, 2, [3, 2, 3], [])]),
     ('mixed_float_newer', map('job', 'c'), [(toDateTime64(100, 3), 0, 0, 0.001, 5, 7.5, 1, [(0, 1)], [4], [], [], [], 5, 1, [4], [])]),
     ('mixed_hist_newer', map('job', 'd'), [(toDateTime64(110, 3), 0, 0, 0.001, 7, 11.5, 0, [(0, 2)], [4, 3], [], [], [], 7, 0, [4, 3], [])]),
-    ('stale_hist', map('job', 'e'), [(toDateTime64(110, 3), 16, 0, 0.001, 9, 9, 0, [(0, 1)], [9], [], [], [], 9, 0, [9], [])]);
+    ('stale_hist', map('job', 'e'), [(toDateTime64(110, 3), 16, 0, 0.001, 9, 9, 0, [(0, 1)], [9], [], [], [], 9, 0, [9], [])]),
+    ('stale_after_float', map('job', 'f'), [(toDateTime64(110, 3), 16, 0, 0.001, 9, 9, 0, [(0, 1)], [9], [], [], [], 9, 0, [9], [])]);
 
 SELECT '-- pure-float series: the float sample wins, histogram is NULL';
 SELECT tags, timestamp, value, histogram FROM prometheusQuery('ts_nh', 'pure_float', 120);
@@ -80,7 +82,10 @@ SELECT tags, timestamp, value FROM prometheusQuery('ts_nh', 'abs(last_over_time(
 SELECT '-- abs over the mixed series whose newest sample is a float: the float is used';
 SELECT tags, timestamp, value FROM prometheusQuery('ts_nh', 'abs(mixed_float_newer)', 120);
 
-SELECT '-- range query over a mixed series: both arms are still emitted (SampleStream semantics)';
+SELECT '-- range query over a mixed series: each step keeps only its newest sample, a float or a histogram';
 SELECT tags, samples, histogram_series FROM prometheusQueryRange('ts_nh', 'mixed_hist_newer', 100, 120, 10);
+
+SELECT '-- range query over a float followed by a stale-marker histogram: the float is not used after the marker';
+SELECT tags, samples, histogram_series FROM prometheusQueryRange('ts_nh', 'stale_after_float', 100, 120, 10);
 
 DROP TABLE ts_nh;

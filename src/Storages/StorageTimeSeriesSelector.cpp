@@ -1,5 +1,6 @@
 #include <Storages/StorageTimeSeriesSelector.h>
 
+#include <Access/Common/AccessFlags.h>
 #include <Common/Exception.h>
 #include <Common/logger_useful.h>
 #include <Common/quoteString.h>
@@ -232,6 +233,10 @@ StorageTimeSeriesSelector::Configuration StorageTimeSeriesSelector::getConfigura
     }
 
     time_series_storage_id = context->resolveStorageID(time_series_storage_id);
+
+    /// Checked before the lookup, so the histogram selector does not reveal whether the table or its histograms target exists.
+    if (data_target == ViewTarget::Histograms)
+        context->checkAccess(AccessType::SELECT, time_series_storage_id);
 
     auto time_series_storage = storagePtrToTimeSeries(DatabaseCatalog::instance().getTable(time_series_storage_id, context));
     checkTimeSeriesVersionSupportedByPromQL(*time_series_storage);
@@ -904,6 +909,9 @@ void StorageTimeSeriesSelector::readImpl(
     size_t /* max_block_size */,
     size_t /* num_streams */)
 {
+    /// Checked again here: a table created AS the histogram selector is configured once, not with the reader's grants.
+    if (config.data_target == ViewTarget::Histograms)
+        context->checkAccess(AccessType::SELECT, config.time_series_storage_id);
     auto time_series_storage = storagePtrToTimeSeries(DatabaseCatalog::instance().getTable(config.time_series_storage_id, context));
     checkTimeSeriesVersionSupportedByPromQL(*time_series_storage);
     auto time_series_settings = time_series_storage->getStorageSettings();
