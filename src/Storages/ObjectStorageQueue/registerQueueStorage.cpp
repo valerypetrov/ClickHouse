@@ -335,6 +335,8 @@ Move from an Azure container to another Azure container requires the Blob Storag
 
 Tagging requires tag key and value provided as `after_processing_tag_key` and `after_processing_tag_value`.
 
+On a versioned S3 bucket, `delete` and `move` remove only the version that was read, so an older version of the same key, if there is one, becomes the current object again. The listing does not report versions, so the read is matched to the listed object by its `ETag` only: if the same bytes are uploaded again between the listing and the read, the new version is read, moved or deleted, and the listed version stays at the key.
+
 ### `after_processing_retries` {#after_processing_retries}
 
 Number of retries for the requested after-processing action, before giving up.

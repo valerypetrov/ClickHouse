@@ -1572,6 +1572,8 @@ Chunk ObjectStorageQueueSource::generateImpl()
         {
             if (const auto * provider = dynamic_cast<const IReadBufferMetadataProvider *>(read_buf))
             {
+                /// The read is pinned by ETag, not by version: this may be a same-byte re-upload of the listed version.
+                /// Post-processing then acts on it and leaves the listed version at the key.
                 if (auto val = provider->getMetadata("version_id"); val.has_value())
                     processed_files.back().version_id = val->safeGet<String>();
             }

@@ -26,7 +26,7 @@ namespace ErrorCodes
       "With ordered mode, only the max name of the successfully consumed file stored." \
       "With exclusive mode, no tracking is done; assumes only one node will ever access this S3-compatible storage.", \
       0) \
-    DECLARE(ObjectStorageQueueAction, after_processing, ObjectStorageQueueAction::KEEP, "Delete, keep, move or tag file after successful processing", 0) \
+    DECLARE(ObjectStorageQueueAction, after_processing, ObjectStorageQueueAction::KEEP, "Delete, keep, move or tag file after successful processing. On a versioned S3 bucket, delete and move remove only the version that was read. If the same bytes are uploaded again between the listing and the read, the new version is read and removed, and the listed version stays", 0) \
     DECLARE(String, keeper_path, "", "Zookeeper node path", 0) \
     DECLARE(UInt64, loading_retries, 10, "Retry loading up to specified number of times", 0) \
     DECLARE(UInt64, processing_threads_num, 1, "Number of processing threads (default number of available CPUs or 16)", 0) \

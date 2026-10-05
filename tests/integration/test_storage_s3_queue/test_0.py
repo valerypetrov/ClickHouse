@@ -957,6 +957,7 @@ PAUSE_BEFORE_POST_PROCESS_FAILPOINT = "object_storage_queue_pause_before_post_pr
 PAUSE_AFTER_MOVE_SOURCE_LOOKUP_FAILPOINT = (
     "object_storage_queue_pause_after_move_source_lookup"
 )
+PAUSE_AFTER_COMMIT_FAILPOINT = "object_storage_queue_pause_after_commit"
 
 
 @pytest.mark.parametrize("engine_name", ["S3Queue", "AzureQueue"])
@@ -1612,6 +1613,85 @@ def test_move_takes_the_ingested_version_after_source_deleted(started_cluster):
     assert head["Metadata"]["clickhouse_move_source_version_id"] == ingested
     # The newer version is still the object, not hidden behind a delete marker.
     assert client.head_object(Bucket=bucket, Key=source_key)["VersionId"] == reuploaded
+
+
+@pytest.mark.parametrize("after_processing", ["move", "delete"])
+def test_same_byte_reupload_between_listing_and_read(started_cluster, after_processing):
+    """The listing has no versions, so the read is pinned by `ETag` only. A same-byte re-upload
+    between the listing and the read is the version read and post-processed; the listed one stays."""
+    node = started_cluster.instances["instance"]
+    token = generate_random_string().lower()
+    bucket = f"versioned-{token}"
+    table_name = f"reupload_before_read_{token}"
+    files_path = f"{table_name}_data"
+    processed_prefix = f"{token}_moved"
+    contents = {f"{files_path}/a.csv": b"1,2,3\n", f"{files_path}/b.csv": b"4,5,6\n"}
+    minio = started_cluster.minio_client
+    minio.make_bucket(bucket)
+    minio.set_bucket_versioning(bucket, VersioningConfig(ENABLED))
+    client = boto3.client(
+        "s3",
+        endpoint_url=f"http://{started_cluster.minio_ip}:{started_cluster.minio_port}",
+        aws_access_key_id=started_cluster.minio_access_key,
+        aws_secret_access_key=started_cluster.minio_secret_key,
+    )
+    listed = {
+        key: client.put_object(
+            Bucket=bucket, Key=key, Body=data, ContentType="text/csv"
+        )["VersionId"]
+        for key, data in contents.items()
+    }
+
+    def versions(key):
+        return {
+            version["VersionId"]
+            for version in client.list_object_versions(Bucket=bucket, Prefix=key).get(
+                "Versions", []
+            )
+        }
+
+    create_table(
+        started_cluster,
+        node,
+        table_name,
+        "unordered",
+        files_path,
+        # One file per commit, so the second file waits listed but unread behind the first commit.
+        additional_settings={
+            "processing_threads_num": 1,
+            "max_processed_files_before_commit": 1,
+        },
+        after_processing=after_processing,
+        move_to_prefix=processed_prefix if after_processing == "move" else None,
+        bucket=bucket,
+    )
+
+    node.query(f"SYSTEM ENABLE FAILPOINT {PAUSE_AFTER_COMMIT_FAILPOINT}")
+    try:
+        create_mv(node, table_name, f"{table_name}_dst")
+        wait_failpoint_paused(node, PAUSE_AFTER_COMMIT_FAILPOINT)
+        # One file is committed and its version is gone; the other one is listed but not read yet.
+        pending = [key for key in contents if versions(key) == {listed[key]}]
+        assert len(pending) == 1
+        key = pending[0]
+        reuploaded = client.put_object(
+            Bucket=bucket, Key=key, Body=contents[key], ContentType="text/plain"
+        )["VersionId"]
+    finally:
+        node.query(f"SYSTEM DISABLE FAILPOINT {PAUSE_AFTER_COMMIT_FAILPOINT}")
+
+    # The post-processing took the re-uploaded version, so the listed one is the object again.
+    wait_until(lambda: versions(key) == {listed[key]})
+    assert read_s3_object(started_cluster, bucket, key) == contents[key]
+    assert sorted(
+        node.query(f"SELECT column1, column2, column3 FROM {table_name}_dst").splitlines()
+    ) == ["1\t2\t3", "4\t5\t6"]
+    if after_processing == "move":
+        head = client.head_object(
+            Bucket=bucket, Key=f"{processed_prefix}/{key.rsplit('/', 1)[1]}"
+        )
+        assert head["ContentType"] == "text/plain"
+        assert head["Metadata"]["clickhouse_move_source_version_id"] == reuploaded
 
 
 def test_unguarded_external_move_deletes_only_the_copied_version(started_cluster):
