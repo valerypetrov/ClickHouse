@@ -40,6 +40,8 @@
 [('test','three samples')]	-inf
 [('test','two NaN')]	-inf
 [('test','two samples')]	-inf
+-- quantile(0.8, nan_inf)
+[]	0.40000000000000036
 -- quantile(0.5, series), range
 []	[('1970-01-01 00:01:40.000',1.5),('1970-01-01 00:01:50.000',2),('1970-01-01 00:02:00.000',2)]
 -- quantile by (point) (0.5, series), range
