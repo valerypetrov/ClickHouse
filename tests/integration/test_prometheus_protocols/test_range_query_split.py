@@ -264,6 +264,7 @@ def test_group_by_sort_and_join_limits_disable_splitting(query, params):
         {"min_execution_speed_bytes": 1},
         {"max_execution_speed": 1000000000},
         {"max_execution_speed_bytes": 1000000000000},
+        {"max_estimated_execution_time": 1000000, "max_execution_speed": 1000000000, "timeout_before_checking_execution_speed": 0},
     ],
 )
 def test_read_limits_disable_splitting(params):
