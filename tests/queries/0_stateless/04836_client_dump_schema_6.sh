@@ -86,3 +86,37 @@ CREATE TABLE ${DB}.yt (x Int64) ENGINE = YTsaurus('http://127.0.0.1:1', '//tmp/t
 $CLICKHOUSE_LOCAL --path "$YT_PATH" --dump-schema="${DB}" > "$YT_DUMP_FILE" 2>"$ERR_FILE"
 echo "YTsaurus table, engine gate emitted: $(grep -c 'SET allow_experimental_ytsaurus_table_engine = 1;' "$YT_DUMP_FILE")"
 rm -rf "$YT_PATH" "$YT_DUMP_FILE" "$ERR_FILE"
+
+echo '--- an unrelated DataLakeCatalog database that cannot be listed does not fail the dump ---'
+# `exact_header` is forbidden by tests/config/config.d/forbidden_headers.xml, so listing this catalog's tables fails.
+CATALOG_DB="${DB}_unlistable_catalog"
+READER_DB="${DB}_catalog_reader"
+CATALOG_SRC="zzz_catalog_src_${CLICKHOUSE_TEST_UNIQUE_NAME}"
+CATALOG_DUMP_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_catalog.sql"
+$CLICKHOUSE_CLIENT --query "
+ATTACH DATABASE ${CATALOG_DB} ENGINE = DataLakeCatalog('http://localhost:18181/v1')
+SETTINGS catalog_type = 'rest', auth_header = 'exact_header: some_value', warehouse = 'demo'
+"
+$CLICKHOUSE_CLIENT --multiquery --query "
+CREATE DATABASE ${READER_DB};
+USE ${READER_DB};
+CREATE TABLE ${READER_DB}.${CATALOG_SRC} (id UInt64) ENGINE = MergeTree ORDER BY id;
+CREATE VIEW ${READER_DB}.aaa_reader AS SELECT * FROM merge('', '^${CATALOG_SRC}\$');
+"
+if $CLICKHOUSE_CLIENT --dump-schema="${READER_DB}" > "$CATALOG_DUMP_FILE" 2>"$ERR_FILE"; then
+    echo "reader dumped: $(grep -c "CREATE VIEW ${READER_DB}\.aaa_reader " "$CATALOG_DUMP_FILE")"
+    # The database-less merge() could also match in the catalog, which the dump cannot rule out.
+    echo "unlisted catalog named for the database-less reader: $(grep -F "${READER_DB}.aaa_reader references merge('', '^${CATALOG_SRC}\$') without a database" "$ERR_FILE" | grep -cF "${CATALOG_DB}")"
+else
+    echo "FAIL: dump failed over an unrelated catalog: $(cat "$ERR_FILE")"
+fi
+if $CLICKHOUSE_CLIENT --dump-schema="${CATALOG_DB}" > /dev/null 2>"$ERR_FILE"; then
+    echo 'FAIL: dump of the unlistable catalog itself succeeded'
+else
+    echo "unlistable catalog in the dump set still refused: $(grep -c 'is forbidden' "$ERR_FILE")"
+fi
+$CLICKHOUSE_CLIENT --multiquery --query "
+    DROP DATABASE IF EXISTS ${CATALOG_DB};
+    DROP DATABASE IF EXISTS ${READER_DB} SYNC;
+"
+rm -f "$CATALOG_DUMP_FILE" "$ERR_FILE"

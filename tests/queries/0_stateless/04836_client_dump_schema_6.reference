@@ -7,3 +7,7 @@ OK: constrained replay succeeded
 constrained replay table present: 1
 --- a YTsaurus table keeps its engine gate ---
 YTsaurus table, engine gate emitted: 1
+--- an unrelated DataLakeCatalog database that cannot be listed does not fail the dump ---
+reader dumped: 1
+unlisted catalog named for the database-less reader: 1
+unlistable catalog in the dump set still refused: 1

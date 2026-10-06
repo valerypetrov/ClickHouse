@@ -347,6 +347,8 @@ struct TableInfo
     /// Database-less references no dumped database contains. They resolve against `database` on
     /// replay, which does not contain them either, so the dump cannot create them.
     std::vector<String> unresolved_references;
+    /// Database-less references that a catalog database whose tables could not be listed may also hold.
+    std::vector<String> unchecked_references;
     NamedCollectionDependencies named_collections;
     /// Materialized view only: replay may reach a check that `allow_materialized_view_with_bad_select` relaxes.
     bool needs_bad_select_gate = false;
@@ -365,6 +367,7 @@ struct RawTableRow
     std::vector<std::pair<String, String>> loading_dependencies;
     std::vector<std::pair<String, String>> dependents; /// views/dictionaries that read from this table
     std::vector<String> unresolved_references;
+    std::vector<String> unchecked_references;
     NamedCollectionDependencies named_collections;
     String target_database; /// materialized view only: its `TO` target, explicit or implicit
     String target_table;
@@ -1096,9 +1099,11 @@ void collectMergeAndLoopReferences(
     const std::map<String, std::set<String>> & table_names_by_db,
     const std::set<String> & undumped_databases,
     const std::map<String, std::map<String, String>> & undumped_tables_by_db,
+    const std::set<String> & unlisted_databases,
     const String & owning_database,
     const ContextPtr & context,
-    std::vector<TableReference> & out)
+    std::vector<TableReference> & out,
+    std::vector<String> & unchecked)
 {
     if (const auto * function = node.as<ASTFunction>(); function && function->arguments)
     {
@@ -1178,6 +1183,8 @@ void collectMergeAndLoopReferences(
                                             merge_ambiguous_dbs += backQuoteIfNeed(db) + " (omitted)";
                                             break;
                                         }
+                        if (merge_owning_matches && !unlisted_databases.empty())
+                            unchecked.push_back("merge('', " + quoteString(*table_pattern) + ")");
                     }
                     for (const auto & db : matched_databases)
                     {
@@ -1698,6 +1705,7 @@ std::vector<TableInfo> resolveTables(
     const ClusterLocality & clusters,
     const std::set<String> & undumped_databases,
     const std::map<String, std::map<String, String>> & undumped_tables_by_db,
+    const std::set<String> & unlisted_databases,
     const std::map<String, String> & database_queries,
     const std::map<String, DatabaseInfo> & database_info)
 {
@@ -2022,6 +2030,9 @@ std::vector<TableInfo> resolveTables(
                         "so replaying under USE {} could silently rebind it",
                         backQuoteIfNeed(resolved.second), backQuoteIfNeed(row.database), backQuoteIfNeed(row.name),
                         backQuoteIfNeed(row.database), omitted_databases, backQuoteIfNeed(row.database));
+                /// A catalog table can never be a dictionary or a Join table, so only a plain table reference is unchecked.
+                if (candidate.kind == ReferenceKind::Any && !unlisted_databases.empty())
+                    row.unchecked_references.push_back(backQuoteIfNeed(resolved.second));
                 resolved.first = row.database;
             }
             if (resolved != std::pair(row.database, row.name))
@@ -2035,7 +2046,8 @@ std::vector<TableInfo> resolveTables(
                 references.push_back({table_id->getDatabaseName(), table_id->shortName()});
             collectFunctionArgumentReferences(node, clusters, references);
             collectMergeAndLoopReferences(
-                node, all_table_names_by_db, undumped_databases, undumped_tables_by_db, row.database, clusters.context, references);
+                node, all_table_names_by_db, undumped_databases, undumped_tables_by_db, unlisted_databases, row.database,
+                clusters.context, references, row.unchecked_references);
         });
         for (const auto & candidate : references)
             add_dependency(candidate);
@@ -2063,6 +2075,7 @@ std::vector<TableInfo> resolveTables(
         table.emit = emit;
         table.dependencies = std::move(row.loading_dependencies);
         table.unresolved_references = std::move(row.unresolved_references);
+        table.unchecked_references = std::move(row.unchecked_references);
         table.named_collections = std::move(row.named_collections);
         /// A dependency on an omitted helper table is remapped onto the owning object - which is what
         /// creates the helper on replay - so the edge survives instead of dangling on a skipped row.
@@ -2097,7 +2110,8 @@ std::vector<TableInfo> fetchTables(
     const std::set<String> & undumped_databases,
     const std::map<String, String> & database_queries,
     const std::map<String, DatabaseInfo> & database_info,
-    std::map<String, NamedCollectionDependencies> & database_named_collections)
+    std::map<String, NamedCollectionDependencies> & database_named_collections,
+    std::set<String> & unlisted_databases)
 {
     ClusterLocality clusters;
     clusters.context = context;
@@ -2266,10 +2280,10 @@ std::vector<TableInfo> fetchTables(
             undumped_databases_to_scan.insert(db);
 
     std::map<String, std::map<String, String>> undumped_tables_by_db;
-    if (!undumped_databases_to_scan.empty())
+    auto scan_undumped = [&](const std::vector<String> & names)
     {
         String undumped_list;
-        for (const auto & db : undumped_databases_to_scan)
+        for (const auto & db : names)
         {
             if (!undumped_list.empty())
                 undumped_list += ", ";
@@ -2290,6 +2304,30 @@ std::vector<TableInfo> fetchTables(
                     undumped_tables_by_db[db_col[i].safeGet<String>()].emplace(
                         name_col[i].safeGet<String>(), engine_col[i].safeGet<String>());
             }, context->getSettingsRef(), undumped_visibility.show_datalake_catalogs, undumped_visibility.show_remote_databases);
+    };
+    std::vector<String> plain_databases;
+    std::vector<String> catalog_databases;
+    for (const auto & db : undumped_databases_to_scan)
+    {
+        auto it = database_info.find(db);
+        if (it != database_info.end() && it->second.engine == "DataLakeCatalog")
+            catalog_databases.push_back(db);
+        else
+            plain_databases.push_back(db);
+    }
+    if (!plain_databases.empty())
+        scan_undumped(plain_databases);
+    /// A catalog lists its tables by asking an outside service, which can fail for reasons unrelated to this dump.
+    for (const auto & db : catalog_databases)
+    {
+        try
+        {
+            scan_undumped({db});
+        }
+        catch (const Exception &)
+        {
+            unlisted_databases.insert(db);
+        }
     }
 
     /// A database engine carries a collection the same way a table engine does.
@@ -2301,6 +2339,7 @@ std::vector<TableInfo> fetchTables(
         clusters,
         undumped_databases,
         undumped_tables_by_db,
+        unlisted_databases,
         database_queries,
         database_info);
 }
@@ -2339,6 +2378,7 @@ void reportDependenciesOutsideDumpSet(
     const std::vector<TableInfo> & tables,
     const std::map<String, NamedCollectionDependencies> & database_named_collections,
     const std::vector<String> & target_databases,
+    const std::set<String> & unlisted_databases,
     std::ostream & err)
 {
     std::set<String> dumped_databases(target_databases.begin(), target_databases.end());
@@ -2453,6 +2493,20 @@ void reportDependenciesOutsideDumpSet(
         err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " references "
             << backQuoteIfNeed(reference) << " without a database; no dumped database contains it, and on replay it "
             << "will resolve against " << backQuoteIfNeed(database) << ", which does not contain it either.\n";
+
+    String unlisted;
+    for (const auto & database : unlisted_databases)
+        unlisted += (unlisted.empty() ? "" : ", ") + backQuoteIfNeed(database);
+    std::set<std::tuple<String, String, String>> unchecked;
+    for (const auto & table : tables)
+        if (table.emit)
+            for (const auto & reference : table.unchecked_references)
+                unchecked.emplace(table.database, table.name, reference);
+    for (const auto & [database, name, reference] : unchecked)
+        err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " references " << reference
+            << " without a database, and the tables of DataLakeCatalog database(s) " << unlisted
+            << " could not be listed to rule out the same name there; if one has it, the object may have been created "
+            << "reading that one, while replay reads the one in " << backQuoteIfNeed(database) << ".\n";
 
     if (!missing.empty() || !unresolved.empty() || !collections.empty() || !database_collections.empty() || !unconfirmed_collections.empty()
         || !unconfirmed_database_collections.empty())
@@ -3998,6 +4052,7 @@ void dumpDatabaseSchema(
             undumped_databases.erase(db);
 
         std::map<String, NamedCollectionDependencies> database_named_collections;
+        std::set<String> unlisted_databases;
         tables = fetchTables(
             connection,
             timeouts,
@@ -4007,8 +4062,9 @@ void dumpDatabaseSchema(
             undumped_databases,
             create_database_query_by_db,
             database_info,
-            database_named_collections);
-        reportDependenciesOutsideDumpSet(tables, database_named_collections, target_databases, err);
+            database_named_collections,
+            unlisted_databases);
+        reportDependenciesOutsideDumpSet(tables, database_named_collections, target_databases, unlisted_databases, err);
         reportMaskedSecrets(tables, create_database_query_by_db, err);
         order = orderTablesByDependencies(tables);
         const std::vector<String> user_defined_functions = fetchStringColumn(connection, timeouts, client_info,
