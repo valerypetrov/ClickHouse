@@ -49,27 +49,13 @@ expect {
 # The same for a distributed query: the initiator receives the remote server's `Progress` and
 # `ProfileEvents` packets, which count to its `NetworkReceiveBytes` but are not query data.
 # The remote server returns no rows, so all it sends is such service traffic.
-# A few hundred bytes of connection setup and a stray 4 KiB write can still show up as a tiny rate
-# (observed under CI's flaky check, which runs many copies concurrently), so only a rate that
-# service traffic would reach if it were counted as data fails the test.
-proc io_rate_too_high {value unit} {
-    set scale [dict get {{} 1 K 1e3 M 1e6 G 1e9 T 1e12} $unit]
-    return [expr {$value * $scale >= 3000}]
-}
-
 send -- "SELECT * FROM remote('127.0.0.1', numbers(300)) WHERE sleepEachRow(0.01) != 0 SETTINGS prefer_localhost_replica = 0, max_block_size = 1 FORMAT Null\r"
 expect {
-    -re {([0-9.]+) ([A-Za-z]*)B/s IO} {
-        if {[io_rate_too_high $expect_out(1,string) $expect_out(2,string)]} { exit 1 }
-        exp_continue
-    }
+    -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
     "rows in set." {}
 }
 expect {
-    -re {([0-9.]+) ([A-Za-z]*)B/s IO} {
-        if {[io_rate_too_high $expect_out(1,string) $expect_out(2,string)]} { exit 1 }
-        exp_continue
-    }
+    -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
     ":) " {}
 }
 
