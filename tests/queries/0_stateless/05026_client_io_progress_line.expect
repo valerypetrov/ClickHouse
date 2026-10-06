@@ -46,6 +46,19 @@ expect {
     ":) " {}
 }
 
+# The same for a distributed query: the initiator receives the remote server's `Progress` and
+# `ProfileEvents` packets, which count to its `NetworkReceiveBytes` but are not query data.
+# The remote server returns no rows, so all it sends is such service traffic.
+send -- "SELECT * FROM remote('127.0.0.1', numbers(300)) WHERE sleepEachRow(0.01) != 0 SETTINGS prefer_localhost_replica = 0, max_block_size = 1 FORMAT Null\r"
+expect {
+    -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
+    "rows in set." {}
+}
+expect {
+    -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
+    ":) " {}
+}
+
 # ~30 MB stream paced to ~3 seconds, so ProfileEvents packets carry nonzero
 # `NativeProtocolDataBytes` deltas; `FORMAT Null` intentionally leaves the meter at zero.
 send -- "SELECT randomString(100000) AS s, sleepEachRow(0.01) FROM numbers(300) INTO OUTFILE '/dev/null' APPEND FORMAT TSV SETTINGS max_block_size = 10\r"
