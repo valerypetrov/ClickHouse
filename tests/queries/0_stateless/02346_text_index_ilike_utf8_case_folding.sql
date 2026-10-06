@@ -49,7 +49,7 @@ INSERT INTO tab VALUES (1, concat('ab', char(0xC5, 0xBF), 'oop zzz')), (2, 'ABSO
 SELECT groupArray(id) FROM tab WHERE message ILIKE '%bsoo%' SETTINGS use_skip_indexes = 0;
 SELECT groupArray(id) FROM tab WHERE message ILIKE '%bsoo%';
 
-SELECT 'no preprocessor, U+212A KELVIN SIGN is a token separator but ILIKE reads it as k';
+SELECT 'no preprocessor, U+212A KELVIN SIGN is a token separator and ILIKE does not read it as k';
 
 DROP TABLE IF EXISTS tab;
 CREATE TABLE tab (id UInt32, message String, INDEX idx(message) TYPE text(tokenizer = splitByNonAlpha))
