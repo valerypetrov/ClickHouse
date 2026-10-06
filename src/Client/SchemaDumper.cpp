@@ -728,9 +728,12 @@ const std::map<String, String> * tryGetRemoteNamedCollection(
     if (auto it = collections.find(name); it != collections.end())
         return &it->second;
     /// A named collection takes only `key = value` or table-function arguments after its name, so any other one proves a cluster.
+    /// A trailing `SETTINGS` is not an argument: `parseRemoteFunctionArguments` strips it first.
     const auto & arguments = function.arguments->children;
     const bool may_be_collection = std::all_of(
-        std::next(arguments.begin()), arguments.end(), [](const ASTPtr & argument) { return argument->as<ASTFunction>() != nullptr; });
+        std::next(arguments.begin()),
+        arguments.end(),
+        [](const ASTPtr & argument) { return argument->as<ASTFunction>() != nullptr || argument->as<ASTSetQuery>() != nullptr; });
     const bool is_cluster = clusters.names().known.contains(name);
     if (is_cluster && !may_be_collection)
         return nullptr;

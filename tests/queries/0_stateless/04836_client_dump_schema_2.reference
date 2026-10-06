@@ -76,6 +76,7 @@ unresolvable cluster refused: 1
 --- a remote() call in the named-collection form is not read as a same-named cluster ---
 OK: a positional call names the local cluster
 named-collection form over a same-named cluster refused: 1
+named-collection form with SETTINGS over a same-named cluster refused: 1
 --- a cluster with local replicas names a real local dependency ---
 OK: local cluster() source dumped before its reader
 OK: identifier-spelled local cluster() source dumped before its reader

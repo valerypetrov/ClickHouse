@@ -499,6 +499,15 @@ if $CLICKHOUSE_LOCAL --config-file "$NC_FORM_CONF" --path "$NC_FORM_PATH" --dump
 else
     echo "named-collection form over a same-named cluster refused: $(grep -c 'would be read before the cluster' "$ERR_FILE")"
 fi
+# A trailing SETTINGS is not an argument, so it does not turn the named-collection form into a cluster call.
+$CLICKHOUSE_LOCAL --config-file "$NC_FORM_CONF" --path "$NC_FORM_PATH" --multiquery "
+    DROP VIEW ${DB}.aab_reader;
+    CREATE VIEW ${DB}.aac_reader_settings (id UInt64) AS SELECT * FROM remote(dump_schema_nc_form, table = 'zzz_src', SETTINGS skip_unavailable_shards = 1)"
+if $CLICKHOUSE_LOCAL --config-file "$NC_FORM_CONF" --path "$NC_FORM_PATH" --dump-schema="${DB}" > /dev/null 2>"$ERR_FILE"; then
+    echo 'FAIL: dump read the named-collection form with SETTINGS as the same-named cluster'
+else
+    echo "named-collection form with SETTINGS over a same-named cluster refused: $(grep -c 'would be read before the cluster' "$ERR_FILE")"
+fi
 rm -rf "$NC_FORM_PATH" "$NC_FORM_CONF"
 
 echo '--- a cluster with local replicas names a real local dependency ---'
