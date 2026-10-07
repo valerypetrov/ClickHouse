@@ -49,15 +49,15 @@ expect {
 # The same for a distributed query: the initiator receives the remote server's `Progress` and
 # `ProfileEvents` packets, which count to its `NetworkReceiveBytes` but are not query data.
 # The remote server returns no rows, so all it sends is such service traffic.
-# A few hundred bytes of connection setup are still counted once, so the progress line may show a
-# decaying rate of a few hundred B/s - and, divided by the first few milliseconds, a spike of tens of
-# KB/s (both seen under CI's flaky check). So only a term after the first 100 of the 300 rows, and
-# of 3 KB/s or more, counts: uncounted service traffic would show there at about 7 KB/s.
+# A few KB of connection setup are still counted once, so the progress line shows a rate that decays
+# as the query runs (about 3 KB divided by the elapsed time: 35 KB/s in the first milliseconds, 7 KB/s
+# at 40 rows, 3 KB/s at 100 rows under CI's flaky and targeted checks). Uncounted service traffic would
+# instead stay at about 7 KB/s. So only a term of 4 KB/s or more after 200 of the 300 rows counts.
 proc fail_on_late_io_term {} {
     expect {
         -re {Progress: ([0-9]+)\.[0-9]+ rows[^\r\n]*?([0-9.]+) ([A-Za-z]*)B/s IO} {
             set scale [dict get {{} 1 K 1e3 M 1e6 G 1e9 T 1e12} $expect_out(3,string)]
-            if {$expect_out(1,string) >= 100 && $expect_out(2,string) * $scale >= 3000} { exit 1 }
+            if {$expect_out(1,string) >= 200 && $expect_out(2,string) * $scale >= 4000} { exit 1 }
             exp_continue
         }
         "rows in set." {}
