@@ -223,9 +223,8 @@ namespace ProfileEvents
     extern const Event WriteBufferFromAzureBytes;
     extern const Event ReadWriteBufferFromHTTPBytes;
     extern const Event WriteBufferFromHTTPBytes;
-    extern const Event NetworkReceiveBytes;
     extern const Event NativeProtocolDataBytes;
-    extern const Event NativeProtocolServiceReceiveBytes;
+    extern const Event NativeProtocolDataReceiveBytes;
     extern const Event StreamingExchangeSendBytes;
     extern const Event StreamingExchangeReceiveBytes;
 }
@@ -2222,16 +2221,15 @@ void ClientBase::onProfileEvents(Block & block)
         std::string_view azure_write_bytes_name = ProfileEvents::getName(ProfileEvents::WriteBufferFromAzureBytes);
         std::string_view http_rw_bytes_name = ProfileEvents::getName(ProfileEvents::ReadWriteBufferFromHTTPBytes);
         std::string_view http_write_bytes_name = ProfileEvents::getName(ProfileEvents::WriteBufferFromHTTPBytes);
-        std::string_view net_read_bytes_name = ProfileEvents::getName(ProfileEvents::NetworkReceiveBytes);
         std::string_view native_data_bytes_name = ProfileEvents::getName(ProfileEvents::NativeProtocolDataBytes);
-        std::string_view native_service_receive_bytes_name = ProfileEvents::getName(ProfileEvents::NativeProtocolServiceReceiveBytes);
+        /// Not `NetworkReceiveBytes`: it also counts protocol service traffic, such as the `Progress`
+        /// and `ProfileEvents` packets of remote servers, which is not query data.
+        std::string_view native_data_receive_bytes_name = ProfileEvents::getName(ProfileEvents::NativeProtocolDataReceiveBytes);
         /// `NetworkSendBytes` and `NetworkReceiveBytes` do not count the sockets of streaming exchanges.
         std::string_view exchange_send_bytes_name = ProfileEvents::getName(ProfileEvents::StreamingExchangeSendBytes);
         std::string_view exchange_receive_bytes_name = ProfileEvents::getName(ProfileEvents::StreamingExchangeReceiveBytes);
 
         HostToTimesMap thread_times;
-        /// Hosts whose received bytes changed in this block.
-        std::unordered_set<String> receiving_hosts;
         for (size_t i = 0; i < rows; ++i)
         {
             auto thread_id = array_thread_id[i];
@@ -2266,21 +2264,9 @@ void ClientBase::onProfileEvents(Block & block)
                 event_name == os_read_bytes_name || event_name == s3_read_bytes_name || event_name == azure_read_bytes_name
                 || event_name == os_write_bytes_name || event_name == s3_write_bytes_name || event_name == azure_write_bytes_name
                 || event_name == http_rw_bytes_name || event_name == http_write_bytes_name
-                || event_name == native_data_bytes_name || event_name == exchange_send_bytes_name
-                || event_name == exchange_receive_bytes_name)
+                || event_name == native_data_bytes_name || event_name == native_data_receive_bytes_name
+                || event_name == exchange_send_bytes_name || event_name == exchange_receive_bytes_name)
                 thread_times[host_name].io_bytes += value;
-            else if (event_name == net_read_bytes_name)
-            {
-                received_bytes_by_host[host_name].network += value;
-                receiving_hosts.insert(host_name);
-            }
-            else if (event_name == native_service_receive_bytes_name)
-            {
-                auto & received = received_bytes_by_host[host_name];
-                received.service += value;
-                received.reports_service = true;
-                receiving_hosts.insert(host_name);
-            }
             /// The rows below are `GAUGE` snapshots and can also come in several rows for one host:
             /// from several queued snapshots of one source, or from several shards on one server.
             /// Summing would multiply one source's usage by the number of coalesced snapshots,
@@ -2294,25 +2280,6 @@ void ClientBase::onProfileEvents(Block & block)
             /// Keep the literal in sync with TemporaryDataOnDiskScope::USAGE_EVENT_NAME.
             else if (event_name == "TemporaryDataOnDiskUsage")
                 thread_times[host_name].temp_data_on_disk_usage = std::max(thread_times[host_name].temp_data_on_disk_usage, static_cast<UInt64>(value));
-        }
-        /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
-        /// The socket reads ahead of parsing, so in one block `NetworkReceiveBytes` can run ahead of
-        /// `NativeProtocolServiceReceiveBytes` and in the next one behind it: compare the totals of the query
-        /// and count only their growth, rather than the positive differences of single blocks, which add up.
-        /// A server older than `NativeProtocolServiceReceiveBytes` does not report it, and its `NetworkReceiveBytes`
-        /// would show its service traffic as IO. A newer server reports it at the start of every query (the end of
-        /// the external tables), so the network term is left out for a host until it has reported the counter once.
-        for (const auto & host_name : receiving_hosts)
-        {
-            auto & received = received_bytes_by_host[host_name];
-            if (!received.reports_service || received.network <= received.service)
-                continue;
-            UInt64 data_bytes = received.network - received.service;
-            if (data_bytes > received.counted)
-            {
-                thread_times[host_name].io_bytes += data_bytes - received.counted;
-                received.counted = data_bytes;
-            }
         }
         progress_indication.updateThreadEventData(thread_times);
         progress_table.updateTable(block);
@@ -3063,7 +3030,6 @@ void ClientBase::processParsedSingleQuery(
     processed_rows_from_progress = 0;
     written_first_block = false;
     progress_indication.resetProgress();
-    received_bytes_by_host.clear();
     progress_table.resetTable();
     profile_events.watch.restart();
 

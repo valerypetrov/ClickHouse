@@ -49,10 +49,8 @@ expect {
 # The same for a distributed query: the initiator receives the remote server's `Progress` and
 # `ProfileEvents` packets, which count to its `NetworkReceiveBytes` but are not query data.
 # The remote server returns no rows, so all it sends is such service traffic.
-# A few KB of connection setup are still counted once, so the progress line shows a rate that decays
-# as the query runs (about 3 KB divided by the elapsed time: 35 KB/s in the first milliseconds, 7 KB/s
-# at 40 rows, 3 KB/s at 100 rows under CI's flaky and targeted checks). Uncounted service traffic would
-# instead stay at about 7 KB/s. So only a term of 4 KB/s or more after 200 of the 300 rows counts.
+# Counted as IO, it would stay at about 7 KB/s. To tolerate a stray small IO term (e.g. a disk read
+# of the server), only a term of 4 KB/s or more after 200 of the 300 rows counts.
 proc fail_on_late_io_term {} {
     expect {
         -re {Progress: ([0-9]+)\.[0-9]+ rows[^\r\n]*?([0-9.]+) ([A-Za-z]*)B/s IO} {
