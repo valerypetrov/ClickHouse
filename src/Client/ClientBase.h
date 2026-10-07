@@ -28,7 +28,7 @@
 #include <optional>
 #include <string_view>
 #include <string>
-#include <unordered_set>
+#include <unordered_map>
 
 #include <Poco/Util/LayeredConfiguration.h>
 
@@ -495,8 +495,18 @@ protected:
     SettingsChanges settings_from_server;
 
     ProgressIndication progress_indication;
-    /// Hosts that reported `NativeProtocolServiceReceiveBytes` during the current query, see `onProfileEvents`.
-    std::unordered_set<String> hosts_reporting_service_receive_bytes;
+    /// Per host, the network bytes received during the current query, see `onProfileEvents`.
+    struct ReceivedBytes
+    {
+        UInt64 network = 0;
+        /// The part of `network` that is protocol service traffic.
+        UInt64 service = 0;
+        /// The part of `network - service` already counted as IO.
+        UInt64 counted = 0;
+        /// Whether the host reports `NativeProtocolServiceReceiveBytes` at all.
+        bool reports_service = false;
+    };
+    std::unordered_map<String, ReceivedBytes> received_bytes_by_host;
     /// Progress received before the output format was created (e.g. from scalar subqueries during analysis).
     /// Replayed into output_format once it's available.
     Progress pending_progress;

@@ -2230,8 +2230,8 @@ void ClientBase::onProfileEvents(Block & block)
         std::string_view exchange_receive_bytes_name = ProfileEvents::getName(ProfileEvents::StreamingExchangeReceiveBytes);
 
         HostToTimesMap thread_times;
-        /// Per host: the bytes received from the network, and the part of them that is protocol service traffic.
-        std::unordered_map<String, std::pair<UInt64, UInt64>> receive_bytes;
+        /// Hosts whose received bytes changed in this block.
+        std::unordered_set<String> receiving_hosts;
         for (size_t i = 0; i < rows; ++i)
         {
             auto thread_id = array_thread_id[i];
@@ -2270,11 +2270,16 @@ void ClientBase::onProfileEvents(Block & block)
                 || event_name == exchange_receive_bytes_name)
                 thread_times[host_name].io_bytes += value;
             else if (event_name == net_read_bytes_name)
-                receive_bytes[host_name].first += value;
+            {
+                received_bytes_by_host[host_name].network += value;
+                receiving_hosts.insert(host_name);
+            }
             else if (event_name == native_service_receive_bytes_name)
             {
-                receive_bytes[host_name].second += value;
-                hosts_reporting_service_receive_bytes.insert(host_name);
+                auto & received = received_bytes_by_host[host_name];
+                received.service += value;
+                received.reports_service = true;
+                receiving_hosts.insert(host_name);
             }
             /// The rows below are `GAUGE` snapshots and can also come in several rows for one host:
             /// from several queued snapshots of one source, or from several shards on one server.
@@ -2291,12 +2296,24 @@ void ClientBase::onProfileEvents(Block & block)
                 thread_times[host_name].temp_data_on_disk_usage = std::max(thread_times[host_name].temp_data_on_disk_usage, static_cast<UInt64>(value));
         }
         /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
+        /// The socket reads ahead of parsing, so in one block `NetworkReceiveBytes` can run ahead of
+        /// `NativeProtocolServiceReceiveBytes` and in the next one behind it: compare the totals of the query
+        /// and count only their growth, rather than the positive differences of single blocks, which add up.
         /// A server older than `NativeProtocolServiceReceiveBytes` does not report it, and its `NetworkReceiveBytes`
         /// would show its service traffic as IO. A newer server reports it at the start of every query (the end of
         /// the external tables), so the network term is left out for a host until it has reported the counter once.
-        for (const auto & [host_name, bytes] : receive_bytes)
-            if (hosts_reporting_service_receive_bytes.contains(host_name) && bytes.first > bytes.second)
-                thread_times[host_name].io_bytes += bytes.first - bytes.second;
+        for (const auto & host_name : receiving_hosts)
+        {
+            auto & received = received_bytes_by_host[host_name];
+            if (!received.reports_service || received.network <= received.service)
+                continue;
+            UInt64 data_bytes = received.network - received.service;
+            if (data_bytes > received.counted)
+            {
+                thread_times[host_name].io_bytes += data_bytes - received.counted;
+                received.counted = data_bytes;
+            }
+        }
         progress_indication.updateThreadEventData(thread_times);
         progress_table.updateTable(block);
 
@@ -3046,7 +3063,7 @@ void ClientBase::processParsedSingleQuery(
     processed_rows_from_progress = 0;
     written_first_block = false;
     progress_indication.resetProgress();
-    hosts_reporting_service_receive_bytes.clear();
+    received_bytes_by_host.clear();
     progress_table.resetTable();
     profile_events.watch.restart();
 
