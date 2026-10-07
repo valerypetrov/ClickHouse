@@ -49,11 +49,21 @@ expect {
 # The same for a distributed query: the initiator receives the remote server's `Progress` and
 # `ProfileEvents` packets, which count to its `NetworkReceiveBytes` but are not query data.
 # The remote server returns no rows, so all it sends is such service traffic.
-send -- "SELECT * FROM remote('127.0.0.1', numbers(300)) WHERE sleepEachRow(0.01) != 0 SETTINGS prefer_localhost_replica = 0, max_block_size = 1 FORMAT Null\r"
-expect {
-    -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
-    "rows in set." {}
+# The first updates may show a short start-up spike (a few hundred bytes of connection setup divided
+# by a few milliseconds, seen under CI's flaky check), so only a term after the first 100 of the 300
+# rows counts: uncounted service traffic would still show there, at about 7 KB/s.
+proc fail_on_late_io_term {} {
+    expect {
+        -re {Progress: ([0-9]+)\.[0-9]+ rows[^\r\n]*?[0-9.]+ [A-Za-z]*B/s IO} {
+            if {$expect_out(1,string) >= 100} { exit 1 }
+            exp_continue
+        }
+        "rows in set." {}
+    }
 }
+
+send -- "SELECT * FROM remote('127.0.0.1', numbers(300)) WHERE sleepEachRow(0.01) != 0 SETTINGS prefer_localhost_replica = 0, max_block_size = 1 FORMAT Null\r"
+fail_on_late_io_term
 expect {
     -re {[0-9.]+ [A-Za-z]*B/s IO} { exit 1 }
     ":) " {}
