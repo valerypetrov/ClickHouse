@@ -301,8 +301,10 @@ echo "$page" | grep -q -F 'return (tab.inFlight && tab.runCell) ? tab.runCell : 
 echo "$page" | grep -q -F 'cancelTabRun(getActiveTab());' && echo 'Stop goes through the same path: OK'
 # Only decoded result payloads feed the browser-side network leg; both live and replay keep them.
 echo "$page" | grep -q -F 'if (options.payloadMeter) options.payloadMeter(payload_bytes.length);' && echo 'result payload bytes feed the IO meter: OK'
-echo "$page" | grep -q -F 'payloadMeter: (bytes) => { cell.resources.io_bytes += bytes; },' && echo 'live result payload bytes accumulate: OK'
-echo "$page" | grep -q -F 'payloadMeter: cell ? (bytes) => { cell.resources.io_bytes += bytes; } : undefined,' && echo 'replayed result payload bytes accumulate: OK'
+echo "$page" | grep -q -F 'if (cellOwnsChrome(cell)) progressEl.renderPayloadFrom(cell.resources);' && echo 'live result payload bytes accumulate: OK'
+echo "$page" | grep -q -F 'payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,' && echo 'replayed result payload bytes accumulate: OK'
+# Result payload bytes make the meter live without any profile_events batch (send_profile_events = 0).
+echo "$page" | awk '/^function accumulateResultPayload/,/^}/' | grep -q -F 'state.has = true;' && echo 'result payload alone makes the meter live: OK'
 # An NDJSON stream cut off in the middle of its terminal exception line is a truncation, not a real
 # exception: the reader reports `saw_exception` only once the exception line reached its newline
 # (`exception_done`), so the partial JSON line is never persisted or replayed as the failure carrier.

@@ -2605,6 +2605,7 @@ function freshResourceState()
         io_at_ns: 0,
         io_sampled: 0,
         io: 0, /// Smoothed IO rate, in bytes/second.
+        has_events: false, /// Whether any `profile_events` batch arrived, so the CPU meter has data.
         /// Per-host memory/disk gauges, keyed by host name: { memory, peak, disk } in bytes.
         /// The display shows the total across hosts and, for a distributed query (many hosts),
         /// the maximum over hosts as "max/host" - like `clickhouse-client`.
@@ -2671,6 +2672,15 @@ function accumulateResourceEvents(state, events)
     /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
     for (const r of received.values())
         state.io_bytes += Math.max(r.net - r.service, 0);
+    state.has = true;
+    state.has_events = true;
+}
+
+/// Add the decoded payload bytes of a result packet to the IO meter. It makes the meter live by
+/// itself, so a stream without `profile_events` (e.g. `send_profile_events = 0`) still shows it.
+function accumulateResultPayload(state, bytes)
+{
+    state.io_bytes += bytes;
     state.has = true;
 }
 
@@ -2979,21 +2989,32 @@ class QueryProgressElement extends HTMLElement
             r.cpu = r.cpu ? (r.cpu * 0.5 + instant * 0.5) : instant;
             r.cpu_at_ns = elapsed_ns;
             r.cpu_sampled_ns = r.cpu_ns;
-
-            /// Sample the IO/network rates the same way (bytes over the interval, in bytes/second).
-            const sample_rate = (total_key, at_key, sampled_key, out_key) =>
-            {
-                const d_ns = elapsed_ns - r[at_key];
-                if (d_ns <= 0) return;
-                const instant_rate = (r[total_key] - r[sampled_key]) / d_ns * 1e9;
-                r[out_key] = r[out_key] ? (r[out_key] * 0.5 + instant_rate * 0.5) : instant_rate;
-                r[at_key] = elapsed_ns;
-                r[sampled_key] = r[total_key];
-            };
-            sample_rate('io_bytes', 'io_at_ns', 'io_sampled', 'io');
         }
 
+        this._sampleIo(r);
         this._renderResources();
+    }
+
+    /// Show a (tab-owned) resource state after result payload bytes were added to it: samples only
+    /// the IO rate, since the CPU time arrives only with `profile_events` batches and sampling it in
+    /// between would see idle intervals.
+    renderPayloadFrom(r)
+    {
+        this._resources_state = r;
+        this._sampleIo(r);
+        this._renderResources();
+    }
+
+    /// Sample the IO rate like the CPU one: the bytes since the previous sample over its interval, in bytes/second.
+    _sampleIo(r)
+    {
+        const elapsed_ns = this._last_elapsed_ns;
+        const dt = elapsed_ns - r.io_at_ns;
+        if (dt <= 0) return;
+        const instant = (r.io_bytes - r.io_sampled) / dt * 1e9;
+        r.io = r.io ? (r.io * 0.5 + instant * 0.5) : instant;
+        r.io_at_ns = elapsed_ns;
+        r.io_sampled = r.io_bytes;
     }
 
     /// Adopt a tab-owned resource state into the shared progress line on tab activation (see
@@ -3036,7 +3057,8 @@ class QueryProgressElement extends HTMLElement
         /// query (many hosts), also show the maximum over hosts as "max/host", like the client.
         /// Each metric is padded to the widest it has been so the text does not bounce as values
         /// grow and shrink (e.g. CPU going from "12.3" to "9.1").
-        const parts = [this._padMetric('cpu', `${Math.max(0, r.cpu).toFixed(1)} CPU`)];
+        const parts = [];
+        if (r.has_events) parts.push(this._padMetric('cpu', `${Math.max(0, r.cpu).toFixed(1)} CPU`));
         if (mem_total > 0) parts.push(this._padMetric('ram', `${formatReadableBytes(mem_total)} RAM`));
         if (mem_max < mem_total) parts.push(this._padMetric('ram_max', `${formatReadableBytes(mem_max)} max/host`));
         if (disk_total > 0) parts.push(this._padMetric('disk', `${formatReadableBytes(disk_total)} disk`));
@@ -11182,7 +11204,7 @@ function renderEventStreamText(text, targetResultEl, rawText, base64, format, ce
         base64,
         replay: true,
         resourceMeter: cell ? (events) => accumulateResourceEvents(cell.resources, events) : undefined,
-        payloadMeter: cell ? (bytes) => { cell.resources.io_bytes += bytes; } : undefined,
+        payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,
         onBytes: verbatim ? (bytes) => verbatim.onBytes(bytes) : undefined,
     });
     for (const block of text.split('\n\n'))
@@ -11268,7 +11290,10 @@ async function readEventStream(response, targetResultEl, abortController, cell, 
         rawText,
         format,
         base64,
-        payloadMeter: (bytes) => { cell.resources.io_bytes += bytes; },
+        payloadMeter: (bytes) => {
+            accumulateResultPayload(cell.resources, bytes);
+            if (cellOwnsChrome(cell)) progressEl.renderPayloadFrom(cell.resources);
+        },
         onBytes: verbatim ? (bytes) => verbatim.onBytes(bytes) : undefined,
         onException: () => { saw_exception = true; },
     });
