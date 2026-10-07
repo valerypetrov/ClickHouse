@@ -28,6 +28,7 @@
 #include <optional>
 #include <string_view>
 #include <string>
+#include <unordered_set>
 
 #include <Poco/Util/LayeredConfiguration.h>
 
@@ -494,6 +495,8 @@ protected:
     SettingsChanges settings_from_server;
 
     ProgressIndication progress_indication;
+    /// Hosts that reported `NativeProtocolServiceReceiveBytes` during the current query, see `onProfileEvents`.
+    std::unordered_set<String> hosts_reporting_service_receive_bytes;
     /// Progress received before the output format was created (e.g. from scalar subqueries during analysis).
     /// Replayed into output_format once it's available.
     Progress pending_progress;

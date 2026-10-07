@@ -2272,7 +2272,10 @@ void ClientBase::onProfileEvents(Block & block)
             else if (event_name == net_read_bytes_name)
                 receive_bytes[host_name].first += value;
             else if (event_name == native_service_receive_bytes_name)
+            {
                 receive_bytes[host_name].second += value;
+                hosts_reporting_service_receive_bytes.insert(host_name);
+            }
             /// The rows below are `GAUGE` snapshots and can also come in several rows for one host:
             /// from several queued snapshots of one source, or from several shards on one server.
             /// Summing would multiply one source's usage by the number of coalesced snapshots,
@@ -2288,8 +2291,11 @@ void ClientBase::onProfileEvents(Block & block)
                 thread_times[host_name].temp_data_on_disk_usage = std::max(thread_times[host_name].temp_data_on_disk_usage, static_cast<UInt64>(value));
         }
         /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
+        /// A server older than `NativeProtocolServiceReceiveBytes` does not report it, and its `NetworkReceiveBytes`
+        /// would show its service traffic as IO. A newer server reports it at the start of every query (the end of
+        /// the external tables), so the network term is left out for a host until it has reported the counter once.
         for (const auto & [host_name, bytes] : receive_bytes)
-            if (bytes.first > bytes.second)
+            if (hosts_reporting_service_receive_bytes.contains(host_name) && bytes.first > bytes.second)
                 thread_times[host_name].io_bytes += bytes.first - bytes.second;
         progress_indication.updateThreadEventData(thread_times);
         progress_table.updateTable(block);
@@ -3040,6 +3046,7 @@ void ClientBase::processParsedSingleQuery(
     processed_rows_from_progress = 0;
     written_first_block = false;
     progress_indication.resetProgress();
+    hosts_reporting_service_receive_bytes.clear();
     progress_table.resetTable();
     profile_events.watch.restart();
 
