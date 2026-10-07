@@ -5,6 +5,7 @@
 #include <Columns/ColumnNullable.h>
 #include <Columns/ColumnVector.h>
 #include <Common/PODArray.h>
+#include <Common/VectorWithMemoryTracking.h>
 #include <Core/Settings.h>
 #include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -147,14 +148,14 @@ public:
             null_map = &nullable->getNullMapData();
             nested = &nullable->getNestedColumn();
         }
-        const auto & data = assert_cast<const ColumnFloat64 &>(*nested).getData();
+        const auto & input_values = assert_cast<const ColumnFloat64 &>(*nested).getData();
 
-        auto & state = this->data(place);
+        auto & state = data(place);
         checkNumSteps(state, end - begin);
         addKey(state, *columns[0], row_num);
 
         const size_t old_size = state.values.size();
-        state.values.insert(data.begin() + begin, data.begin() + end);
+        state.values.insert(input_values.begin() + begin, input_values.begin() + end);
         if (null_map)
         {
             state.is_null.insert(null_map->begin() + begin, null_map->begin() + end);
@@ -168,11 +169,11 @@ public:
 
     void mergeImpl(AggregateDataPtr __restrict place, ConstAggregateDataPtr rhs, Arena *) const override
     {
-        const auto & rhs_state = this->data(rhs);
+        const auto & rhs_state = data(rhs);
         if (rhs_state.size() == 0)
             return;
 
-        auto & state = this->data(place);
+        auto & state = data(place);
         checkNumSteps(state, rhs_state.num_steps);
         const size_t keys_size = state.keys.size();
         state.keys.insert(rhs_state.keys.begin(), rhs_state.keys.end());
@@ -184,7 +185,7 @@ public:
 
     void serialize(ConstAggregateDataPtr __restrict place, WriteBuffer & buf, std::optional<size_t> /* version */) const override
     {
-        const auto & state = this->data(place);
+        const auto & state = data(place);
         writeVarUInt(state.size(), buf);
         writeVarUInt(state.num_steps, buf);
         buf.write(state.keys.data(), state.keys.size());
@@ -205,7 +206,7 @@ public:
         if (common::mulOverflow(num_rows, num_steps, num_values))
             throw Exception(ErrorCodes::INCORRECT_DATA, "Incorrect size of a state of aggregate function {}", getName());
 
-        auto & state = this->data(place);
+        auto & state = data(place);
         state.num_steps = num_steps;
         auto keys = key_type->createColumn();
         for (size_t row = 0; row != num_rows; ++row)
@@ -226,7 +227,7 @@ public:
 
     void insertResultInto(AggregateDataPtr __restrict place, IColumn & to, Arena *) const override
     {
-        const auto & state = this->data(place);
+        const auto & state = data(place);
         const size_t num_rows = state.size();
         const size_t num_steps = num_rows ? state.num_steps : 0;
 
@@ -239,11 +240,11 @@ public:
             key_serialization->deserializeBinary(*keys, in, {});
         }
 
-        std::vector<size_t> order(num_rows);
+        VectorWithMemoryTracking<size_t> order(num_rows);
         std::iota(order.begin(), order.end(), 0);
         ::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return lessRow(state, *keys, a, b); });
 
-        std::vector<PrometheusAvg> averages(num_steps);
+        VectorWithMemoryTracking<PrometheusAvg> averages(num_steps);
         for (size_t row : order)
         {
             const size_t offset = row * num_steps;
