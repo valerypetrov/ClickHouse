@@ -42,4 +42,11 @@ SELECT * FROM prometheusQuery('prometheus', 'end', 110);
 SELECT * FROM prometheusQueryRange('prometheus', 'rate @ start()', 100, 110, 10);
 SELECT * FROM prometheusQueryRange('prometheus', 'rate @ end ()', 100, 110, 10);
 
+SELECT '-- limit_ratio is an aggregation operator';
+SELECT * FROM prometheusQuery('prometheus', 'limit_ratio(0.5, rate)', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'limit_ratio by (job) (0.5, rate)', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'limit_ratio(0.5, rate) by (job)', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'limit_ratio without (job) (0.5, rate)', 110); -- { serverError NOT_IMPLEMENTED }
+SELECT * FROM prometheusQuery('prometheus', 'limit_ratio', 110);
+
 DROP TABLE prometheus;

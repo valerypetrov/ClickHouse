@@ -2075,3 +2075,22 @@ PrometheusQueryTree(INSTANT_VECTOR):
     /// Function names are case-sensitive, so `START()` is not a call of `start`.
     EXPECT_FALSE(query_tree.tryParse("START()", 3, &error_message, &error_pos));
 }
+
+
+TEST(PromQLParser, LimitRatio)
+{
+    /// `limit_ratio` is an aggregation operator, not a function, so `by` and `without` can go on either side of its parameters.
+    const String by_before = parse("limit_ratio by (job) (0.5, up)");
+    EXPECT_NE(by_before.find("AggregationOperator(limit_ratio)"), String::npos) << by_before;
+    EXPECT_EQ(parse("limit_ratio(0.5, up) by (job)"), by_before);
+    EXPECT_EQ(parse("LIMIT_RATIO by(job) (0.5, up)"), by_before);
+
+    const String without_after = parse("limit_ratio(0.5, up) without (job)");
+    EXPECT_NE(without_after.find("AggregationOperator(limit_ratio)"), String::npos) << without_after;
+    EXPECT_EQ(parse("limit_ratio without (job) (0.5, up)"), without_after);
+
+    EXPECT_NE(parse("limit_ratio(0.5, up)").find("AggregationOperator(limit_ratio)"), String::npos);
+
+    /// Without '(' it is a metric name, like any other aggregation operator keyword.
+    EXPECT_NE(parse("limit_ratio").find("__name__ EQ 'limit_ratio'"), String::npos);
+}
