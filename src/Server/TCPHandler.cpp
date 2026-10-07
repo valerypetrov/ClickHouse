@@ -1265,7 +1265,6 @@ void TCPHandler::extractConnectionSettingsFromContext(const ContextPtr & context
 
 bool TCPHandler::receivePacketsExpectQuery(std::shared_ptr<QueryState> & state)
 {
-    const size_t packet_start = in->count();
     UInt64 packet_type = 0;
     readVarUInt(packet_type, *in);
 
@@ -1305,10 +1304,6 @@ bool TCPHandler::receivePacketsExpectQuery(std::shared_ptr<QueryState> & state)
 
         case Protocol::Client::Query:
             processQuery(state);
-            /// The query text, settings and client info carry no query data. Counted after
-            /// `processQuery`, which attaches the query's counters that the socket reads go to.
-            ProfileEvents::increment(ProfileEvents::NativeProtocolServiceReceiveBytes,
-                in->count() - packet_start + (proto_send_chunked_cl == "chunked" ? 8 : 0));
             return true;
 
         default:
