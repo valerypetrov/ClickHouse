@@ -2606,8 +2606,9 @@ function freshResourceState()
         io_sampled: 0,
         io: 0, /// Smoothed IO rate, in bytes/second.
         has_events: false, /// Whether any `profile_events` batch arrived, so the CPU meter has data.
-        /// Per-host network bytes received during the query, keyed by host name: { net, service, counted }:
-        /// all of them, the part that is protocol service traffic, and the part of the difference counted as IO.
+        /// Per-host network bytes received during the query, keyed by host name: { net, service, counted, reports_service }:
+        /// all of them, the part that is protocol service traffic, the part of the difference counted as IO,
+        /// and whether the host has reported `NativeProtocolServiceReceiveBytes` at all.
         received: {},
         /// Per-host memory/disk gauges, keyed by host name: { memory, peak, disk } in bytes.
         /// The display shows the total across hosts and, for a distributed query (many hosts),
@@ -2653,8 +2654,14 @@ function accumulateResourceEvents(state, events)
         if (e.name === 'NetworkReceiveBytes' || e.name === 'NativeProtocolServiceReceiveBytes')
         {
             let r = state.received[e.host_name];
-            if (!r) r = state.received[e.host_name] = { net: 0, service: 0, counted: 0 };
-            if (e.name === 'NetworkReceiveBytes') r.net += value; else r.service += value;
+            if (!r) r = state.received[e.host_name] = { net: 0, service: 0, counted: 0, reports_service: false };
+            if (e.name === 'NetworkReceiveBytes')
+                r.net += value;
+            else
+            {
+                r.service += value;
+                r.reports_service = true;
+            }
             receiving.add(e.host_name);
             continue;
         }
@@ -2676,9 +2683,14 @@ function accumulateResourceEvents(state, events)
     /// Service traffic, such as the `Progress` and `ProfileEvents` packets of remote servers, is not query data.
     /// The socket reads ahead of parsing, so one batch can have more `NetworkReceiveBytes` than service bytes
     /// and the next one less: compare the totals of the query and count only their growth, like the client.
+    /// A server older than `NativeProtocolServiceReceiveBytes` does not report it, and its `NetworkReceiveBytes`
+    /// would show its service traffic as IO, so the network term is left out for a host until it has reported
+    /// the counter once - like the client.
     for (const host of receiving)
     {
         const r = state.received[host];
+        if (!r.reports_service || r.net <= r.service)
+            continue;
         const data = r.net - r.service;
         if (data > r.counted)
         {
