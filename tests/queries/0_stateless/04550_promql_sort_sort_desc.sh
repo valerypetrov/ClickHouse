@@ -93,6 +93,26 @@ promql_client -q "(sort({__name__=~'a|b|c'}) and on(__name__) {__name__=~'b|c'})
 echo "-- label_replace() of the same: the series removed by 'and' does not keep its rank either (y=7, x=10)"
 promql_client -q "label_replace(sort({__name__=~'a|b|c'}) and on(__name__) {__name__=~'b|c'}, '__name__', 'm', '', '')"
 
+$CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -m -q "
+INSERT INTO ts_tags VALUES
+    ('00000000-0000-0000-0000-000000000007', 'other', {'instance':'host1'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
+    ('00000000-0000-0000-0000-000000000008', 'other', {'instance':'host2'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
+    ('00000000-0000-0000-0000-000000000009', 'other', {'instance':'host3'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC'));
+INSERT INTO ts_data VALUES
+    ('00000000-0000-0000-0000-000000000007', toDateTime64(1700000000, 3, 'UTC'), 1),
+    ('00000000-0000-0000-0000-000000000008', toDateTime64(1700000000, 3, 'UTC'), 2),
+    ('00000000-0000-0000-0000-000000000009', toDateTime64(1700000000, 3, 'UTC'), 3);
+"
+
+echo "-- sort(up) + other: a binary operator keeps the order fixed by sort() on its left side (12, 23, 31)"
+promql_client -q "sort(up) + other"
+
+echo "-- sort(up) > other: a comparison keeps the order fixed by sort() on its left side (10, 20, 30)"
+promql_client -q "sort(up) > other"
+
+echo "-- other * on(instance) group_right sort_desc(up): group_right keeps the order of its right side (30, 60, 20)"
+promql_client -q "other * on(instance) group_right sort_desc(up)"
+
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts"
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts_data"
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts_tags"

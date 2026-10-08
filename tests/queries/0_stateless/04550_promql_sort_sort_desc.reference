@@ -54,3 +54,15 @@
 -- label_replace() of the same: the series removed by 'and' does not keep its rank either (y=7, x=10)
 [('__name__','m'),('job','y')]	2023-11-14 22:13:20.000	7
 [('__name__','m'),('job','x')]	2023-11-14 22:13:20.000	10
+-- sort(up) + other: a binary operator keeps the order fixed by sort() on its left side (12, 23, 31)
+[('instance','host2')]	2023-11-14 22:13:20.000	12
+[('instance','host3')]	2023-11-14 22:13:20.000	23
+[('instance','host1')]	2023-11-14 22:13:20.000	31
+-- sort(up) > other: a comparison keeps the order fixed by sort() on its left side (10, 20, 30)
+[('__name__','up'),('instance','host2')]	2023-11-14 22:13:20.000	10
+[('__name__','up'),('instance','host3')]	2023-11-14 22:13:20.000	20
+[('__name__','up'),('instance','host1')]	2023-11-14 22:13:20.000	30
+-- other * on(instance) group_right sort_desc(up): group_right keeps the order of its right side (30, 60, 20)
+[('instance','host1')]	2023-11-14 22:13:20.000	30
+[('instance','host3')]	2023-11-14 22:13:20.000	60
+[('instance','host2')]	2023-11-14 22:13:20.000	20
