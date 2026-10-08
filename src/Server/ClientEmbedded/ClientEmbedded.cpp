@@ -6,6 +6,7 @@
 #include <Common/setThreadName.h>
 #include <Common/Config/ConfigHelper.h>
 #include <Common/Exception.h>
+#include <Common/TerminalSize.h>
 #include <Core/Settings.h>
 
 #include <iomanip>
@@ -49,7 +50,14 @@ void ClientEmbedded::printHelpMessage(const OptionsDescription & options_descrip
     output_stream << "This client runs on the server side inside the ClickHouse's main process." << "\n";
 
     if (options_description.main_description.has_value())
-        output_stream << options_description.main_description.value() << "\n";
+    {
+        /// This client refuses `--dump-schema*`, so its help leaves them out.
+        auto main_description = createOptionsDescription("Main options", terminal_width);
+        for (const auto & option : options_description.main_description->options())
+            if (!option->long_name().starts_with("dump-schema"))
+                main_description.add(option);
+        output_stream << main_description << "\n";
+    }
     if (options_description.external_description.has_value())
         output_stream << options_description.external_description.value() << "\n";
     if (options_description.hosts_and_ports_description.has_value())
