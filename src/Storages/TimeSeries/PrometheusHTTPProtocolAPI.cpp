@@ -353,15 +353,17 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
             || settings[Setting::limit] != 0 || settings[Setting::offset] != 0
             || !settings[Setting::select].value.empty() || !settings[Setting::order].value.empty()
             || !settings[Setting::sort].value.empty() || !settings[Setting::filter].value.empty();
-        /// A GROUP BY, sorting or JOIN limit would see one chunk at a time, and a read or speed limit of the whole query would
-        /// start again for each chunk, so they don't let the query be split either.
+        /// A GROUP BY, sorting or JOIN limit would see one chunk at a time, a read or speed limit would start again for each chunk,
+        /// and a time limit with `timeout_overflow_mode = 'break'` would stop elsewhere, so they don't let the query be split either.
         const bool has_whole_query_limits = settings[Setting::max_rows_to_group_by] || settings[Setting::max_rows_to_sort]
             || settings[Setting::max_bytes_to_sort] || settings[Setting::max_rows_in_join] || settings[Setting::max_bytes_in_join]
             || settings[Setting::max_rows_to_read] || settings[Setting::max_bytes_to_read]
             || settings[Setting::max_rows_to_read_leaf] || settings[Setting::max_bytes_to_read_leaf]
             || settings[Setting::min_execution_speed] || settings[Setting::min_execution_speed_bytes]
             || settings[Setting::max_execution_speed] || settings[Setting::max_execution_speed_bytes]
-            || settings[Setting::max_estimated_execution_time].totalMicroseconds() != 0;
+            || settings[Setting::max_estimated_execution_time].totalMicroseconds() != 0
+            || (settings[Setting::max_execution_time].totalMicroseconds() != 0
+                && settings[Setting::timeout_overflow_mode] != OverflowMode::THROW);
         if (split_interval > 0 && split_interval <= length && step > 0 && length / step < MAX_RANGE_QUERY_STEPS
             && !has_whole_result_settings && !has_whole_query_limits
             && getNextChunkStart(evaluation_settings, split_interval, evaluation_settings.start_time->value)
@@ -502,11 +504,7 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
             {
                 if (block.rows() > 0)
                     chunk.push_back(std::move(block));
-                if (!limits.checkTimeLimit(watch.elapsedNanoseconds(), settings[Setting::timeout_overflow_mode]))
-                {
-                    executor.cancel();
-                    break;
-                }
+                limits.checkTimeLimit(watch.elapsedNanoseconds(), OverflowMode::THROW);
             }
             io.pipeline.finalizeWriteInQueryResultCache();
         }
@@ -518,8 +516,7 @@ void PrometheusHTTPProtocolAPI::executeRangeQueryInChunks(
 
         finishExecutedQuery(io, {});
 
-        if (!limits.checkTimeLimit(watch.elapsedNanoseconds(), settings[Setting::timeout_overflow_mode]))
-            break;
+        limits.checkTimeLimit(watch.elapsedNanoseconds(), OverflowMode::THROW);
         chunk_start = next_chunk_start;
     }
 

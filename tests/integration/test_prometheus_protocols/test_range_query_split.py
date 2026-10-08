@@ -299,6 +299,19 @@ def test_read_limits_disable_splitting(params):
     assert_executed_queries(query_id, 1)
 
 
+# The time limit is checked over the whole request, but with `break` a split query would stop at another point than the whole query.
+@pytest.mark.parametrize("timeout_overflow_mode, num_chunks", [("throw", 7), ("break", 1)])
+def test_time_limit_with_break_disables_splitting(timeout_overflow_mode, num_chunks):
+    query = "rate(node_cpu_seconds_total[5m])"
+    params = {"max_execution_time": 1000, "timeout_overflow_mode": timeout_overflow_mode}
+    expected = query_range(query, H, H + 6 * 3600, 60, params)
+
+    query_id = f"range-split-{uuid.uuid4()}"
+    split_params = {**params, "promql_range_query_split_interval": INTERVAL}
+    assert query_range(query, H, H + 6 * 3600, 60, split_params, query_id) == expected
+    assert_executed_queries(query_id, num_chunks)
+
+
 @pytest.mark.parametrize(
     "overflow_mode",
     [
