@@ -303,6 +303,8 @@ echo "$page" | grep -q -F 'cancelTabRun(getActiveTab());' && echo 'Stop goes thr
 echo "$page" | grep -q -F 'if (options.payloadMeter) options.payloadMeter(payload_bytes.length);' && echo 'result payload bytes feed the IO meter: OK'
 echo "$page" | grep -q -F 'if (cellOwnsChrome(cell)) progressEl.renderPayloadFrom(cell.resources);' && echo 'live result payload bytes accumulate: OK'
 echo "$page" | grep -q -F 'payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,' && echo 'replayed result payload bytes accumulate: OK'
+# The result sends of remote shards to the initiator count too: an HTTP query has no own `NativeProtocolDataBytes`.
+echo "$page" | grep -q -F "|| e.name === 'NativeProtocolDataBytes' || e.name === 'NativeProtocolDataReceiveBytes'" && echo 'remote native result sends feed the IO meter: OK'
 # Result payload bytes make the meter live without any profile_events batch (send_profile_events = 0).
 echo "$page" | awk '/^function accumulateResultPayload/,/^}/' | grep -q -F 'state.has = true;' && echo 'result payload alone makes the meter live: OK'
 # An NDJSON stream cut off in the middle of its terminal exception line is a truncation, not a real

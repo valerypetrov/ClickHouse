@@ -70,6 +70,7 @@ Stop goes through the same path: OK
 result payload bytes feed the IO meter: OK
 live result payload bytes accumulate: OK
 replayed result payload bytes accumulate: OK
+remote native result sends feed the IO meter: OK
 result payload alone makes the meter live: OK
 partial exception line is a truncation: OK
 meter aggregate is per run: OK

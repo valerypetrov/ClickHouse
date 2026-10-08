@@ -2635,13 +2635,15 @@ function accumulateResourceEvents(state, events)
 
         /// Exclude compressed `NetworkSendBytes`, whose service bytes cannot be separated; the result leg
         /// counts decoded payload bytes in `makeEventStreamHandler`, more than a compressed response sends.
+        /// An HTTP query does not count `NativeProtocolDataBytes` itself, so it only comes from the remote
+        /// shards of a distributed query, for their result sends to the initiator, like in `clickhouse-client`.
         /// Streaming exchanges of a distributed plan are not counted by the `Network*Bytes` events.
         /// `NativeProtocolDataReceiveBytes` rather than `NetworkReceiveBytes`, which also counts protocol service
         /// traffic, such as the `Progress` and `ProfileEvents` packets of remote servers.
         if (e.name === 'OSReadBytes' || e.name === 'OSWriteBytes' || e.name === 'ReadBufferFromS3Bytes'
             || e.name === 'WriteBufferFromS3Bytes' || e.name === 'ReadBufferFromAzureBytes' || e.name === 'WriteBufferFromAzureBytes'
             || e.name === 'ReadWriteBufferFromHTTPBytes' || e.name === 'WriteBufferFromHTTPBytes'
-            || e.name === 'NativeProtocolDataReceiveBytes'
+            || e.name === 'NativeProtocolDataBytes' || e.name === 'NativeProtocolDataReceiveBytes'
             || e.name === 'StreamingExchangeSendBytes' || e.name === 'StreamingExchangeReceiveBytes')
         {
             state.io_bytes += value;
