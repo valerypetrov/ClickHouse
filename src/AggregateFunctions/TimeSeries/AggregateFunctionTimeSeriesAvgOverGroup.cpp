@@ -135,6 +135,13 @@ public:
 
     bool allocatesMemoryInArena() const override { return false; }
 
+    /// A NULL key sorts last instead of making the default adapter skip the row.
+    AggregateFunctionPtr getOwnNullAdapter(
+        const AggregateFunctionPtr &, const DataTypes & types, const Array &, const AggregateFunctionProperties &) const override
+    {
+        return std::make_shared<AggregateFunctionTimeSeriesAvgOverGroup>(types);
+    }
+
     void add(AggregateDataPtr __restrict place, const IColumn ** columns, size_t row_num, Arena *) const override
     {
         const auto & array = assert_cast<const ColumnArray &>(*columns[1]);
@@ -351,7 +358,7 @@ This function is in private preview, enable it by setting `enable_time_series_ag
     )";
     FunctionDocumentation::Syntax syntax = "timeSeriesAvgOverGroup(sort_key, values)";
     FunctionDocumentation::Arguments arguments = {
-        {"sort_key", "Defines the order in which the rows are averaged, it must be of a comparable type. For PromQL it is the labels of the time series.", {"Any"}},
+        {"sort_key", "Defines the order in which the rows are averaged, it must be of a comparable type. `NULL` keys go last. For PromQL it is the labels of the time series.", {"Any"}},
         {"values", "The values of a time series, one per time step.", {"Array(Float64)", "Array(Nullable(Float64))"}}};
     FunctionDocumentation::ReturnedValue returned_value = {
         "Returns the average at each time step, or `NULL` at the time steps where all values are `NULL`.", {"Array(Nullable(Float64))"}};

@@ -17,6 +17,10 @@ SELECT timeSeriesAvgOverGroup(k, [x]) FROM values('k UInt8, x Float64', (1, nan)
 SELECT timeSeriesAvgOverGroup(k, v) FROM values('k String, v Array(Nullable(Float64))', ('a', [NULL, 3, NULL]), ('b', [1e308, NULL, NULL]), ('c', [1e308, 5, NULL]));
 SELECT timeSeriesAvgOverGroup(k, v) FROM values('k UInt8, v Array(Float64)', (1, [1])) WHERE k > 1;
 SELECT timeSeriesAvgOverGroup(k, v) FROM values('k Nullable(UInt8), v Array(Float64)', (NULL, [1e308]), (1, [2]), (2, [4]));
+-- A NULL key keeps its row and sorts last, so it gives the same result as the largest key.
+SELECT timeSeriesAvgOverGroup(k, [x]) FROM values('k Nullable(Int8), x Float64', (NULL, -1e308), (2, 9.988465674311579e307), (1, 1e308), (3, -9.988465674311579e307));
+SELECT finalizeAggregation(CAST(unhex(hex(timeSeriesAvgOverGroupState(k, v))), 'AggregateFunction(timeSeriesAvgOverGroup, Nullable(UInt8), Array(Float64))'))
+FROM values('k Nullable(UInt8), v Array(Float64)', (NULL, [1e308]), (1, [2]), (2, [4]));
 SELECT timeSeriesAvgOverGroup(k) FROM values('k UInt8', 1); -- { serverError NUMBER_OF_ARGUMENTS_DOESNT_MATCH }
 SELECT timeSeriesAvgOverGroup(k, x) FROM values('k UInt8, x Float64', (1, 1)); -- { serverError ILLEGAL_TYPE_OF_ARGUMENT }
 SELECT timeSeriesAvgOverGroup(k, [toFloat32(1)]) FROM values('k UInt8', 1); -- { serverError ILLEGAL_TYPE_OF_ARGUMENT }
