@@ -87,11 +87,8 @@ constexpr auto move_source_path_attribute = "clickhouse_move_source_path";
 constexpr auto move_source_etag_attribute = "clickhouse_move_source_etag";
 constexpr auto move_source_last_modified_attribute = "clickhouse_move_source_last_modified";
 constexpr auto move_source_version_id_attribute = "clickhouse_move_source_version_id";
-/// The source generation alone does not prove who copied it: anything a `HeadObject` of the source shows
-/// can be restamped onto other bytes. The token is a digest of that generation keyed by the queue's Keeper
-/// identity, so every attempt of the same queue (after a restart, on another replica) stamps the same token,
-/// while another queue moving the same key, or a restamp from public data, does not. The identity carries the
-/// Keeper name as well as the path: one path under two Keeper names is two queues, not one.
+/// The source generation alone does not prove who copied it, as it can be restamped onto other bytes.
+/// The token is a digest of it keyed by the queue's Keeper name and path, so only the same queue reproduces it.
 constexpr auto move_token_attribute = "clickhouse_move_token";
 
 String makeMoveToken(
@@ -211,12 +208,8 @@ void ObjectStorageQueuePostProcessor::process(
     {
         LOG_TRACE(log, "Removing {} objects", objects.size());
 
-        /// On Azure and on S3 the delete is pinned to the ingested generation: `removeObjectsIfExist`
-        /// sends the `ETag` of every object as `If-Match` (the `ETag` element of a `DeleteObjects`
-        /// request on S3), so an object overwritten after it was read is left in place
-        /// (`FILE_CHANGED_DURING_READ`) rather than deleted without the newer generation ever
-        /// having been ingested. An untagged object would be deleted by path; the source never
-        /// hands one over (it fails such a file instead of reading it).
+        /// The delete is pinned to the ingested generation (`ETag` as `If-Match`), so an object overwritten after it was read
+        /// is left in place (`FILE_CHANGED_DURING_READ`). The source never hands over an untagged object.
         if (type == ObjectStorageType::Azure || type == ObjectStorageType::S3)
         {
             for (const auto & object : objects)
@@ -238,9 +231,8 @@ void ObjectStorageQueuePostProcessor::process(
                 fiu_do_on(FailPoints::object_storage_queue_fail_delete, {
                     throw Exception(ErrorCodes::FAULT_INJECTED, "Failed to remove objects");
                 });
-                /// Two generations of one key can share an `ETag`, so on a versioned bucket `If-Match`
-                /// alone would let a same-byte re-upload be deleted in place of the generation that was
-                /// ingested. The version names it, and only a `HEAD` reports one: a listing never does.
+                /// Two generations of one key can share an `ETag`, so on a versioned bucket only the version
+                /// (reported by `HEAD`, never by a listing) names the ingested generation.
                 if (type == ObjectStorageType::S3 && deleteVersionedS3Objects(objects, successful_objects))
                     return;
                 /// Deletes every object it can before reporting one that changed.
@@ -341,11 +333,8 @@ void ObjectStorageQueuePostProcessor::doWithRetries(std::function<void()> action
                 retries + 1,
                 getExceptionMessage(std::current_exception(), /*with_stacktrace=*/ false)
             );
-            /// The object is no longer the generation that was ingested. That does not heal with
-            /// time: every retry would be pinned to the same, now gone, generation and be refused
-            /// again, so the object is left in place for the caller to report. A later retry that
-            /// failed for another reason would also hide the change behind that other error, and
-            /// in non-`EXCLUSIVE` mode that other error is only logged.
+            /// A changed generation does not heal with retries (they stay pinned to the gone generation),
+            /// and a later unrelated error would hide it, so leave the object in place and rethrow.
             const int code = getCurrentExceptionCode();
             if (code == ErrorCodes::FILE_CHANGED_DURING_READ || code == ErrorCodes::AZURE_OBJECT_CHANGED_DURING_READ
                 || code == ErrorCodes::S3_OBJECT_CHANGED_DURING_READ)
@@ -407,9 +396,8 @@ void ObjectStorageQueuePostProcessor::removeCopiedSource(
         }
     }
 #endif
-    /// Without a version to pin, the key is deleted as a whole, pinned to the generation the copy
-    /// consumed: `removeObjectIfExists` sends it as `If-Match`, so a source rewritten since then is
-    /// refused with `FILE_CHANGED_DURING_READ` rather than deleted.
+    /// Without a version to pin, the delete is pinned to the consumed generation via `If-Match`,
+    /// so a source rewritten since the copy is refused with `FILE_CHANGED_DURING_READ`.
     object_storage->removeObjectIfExists(object);
 }
 
@@ -529,10 +517,8 @@ void ObjectStorageQueuePostProcessor::moveWithinBucket(
                     {
                         auto copy_object = [&]() -> CopyResult
                         {
-                            /// On Azure the move must be pinned to the ingested generation (see
-                            /// `moveAzureBlobs`); an untagged source would make `copyObject` select
-                            /// whatever generation exists now with a `HEAD`, and the source never
-                            /// hands over an untagged Azure object.
+                            /// On Azure the move must be pinned to the ingested generation (see `moveAzureBlobs`), and the source
+                            /// never hands over an untagged object, which `copyObject` would resolve to the current generation.
                             if (type == ObjectStorageType::Azure && source_object.etag.empty())
                                 throw Exception(
                                     ErrorCodes::AZURE_BLOB_STORAGE_ERROR,
@@ -583,9 +569,8 @@ void ObjectStorageQueuePostProcessor::moveWithinBucket(
                                         source_metadata->etag,
                                         source_metadata->last_modified.epochTime(),
                                         source_metadata->version_id);
-                                /// The backend looks the source up again, so pin it to the generation this
-                                /// lookup describes: a rewrite in between fails the copy instead of copying
-                                /// newer bytes.
+                                /// The backend looks the source up again, so pin it to the generation this lookup describes:
+                                /// a rewrite in between fails the copy instead of copying newer bytes.
                                 write_settings.object_storage_copy_source_if_match = source_metadata->etag;
                                 /// Two generations of one key can share an `ETag`, so only the version names
                                 /// the one this lookup, the copy and the delete all describe.
@@ -766,10 +751,8 @@ void ObjectStorageQueuePostProcessor::moveS3Objects(const StoredObjects & object
                 {
                     auto copy_object = [&]() -> CopyResult
                     {
-                        /// The source never hands over an untagged object for a move (it fails such a
-                        /// file instead of reading it), and its read was pinned to this very generation
-                        /// (`afterProcessingNeedsIngestedGeneration`), so an untagged object here would
-                        /// be moved as whatever generation exists now.
+                        /// The source never hands over an untagged object for a move (its read was pinned to this generation),
+                        /// so an untagged one here would be moved as whatever generation exists now.
                         if (object_from.etag.empty())
                             throw Exception(
                                 ErrorCodes::S3_ERROR,
@@ -790,11 +773,8 @@ void ObjectStorageQueuePostProcessor::moveS3Objects(const StoredObjects & object
                                 ErrorCodes::S3_OBJECT_CHANGED_DURING_READ,
                                 "S3 object {} was not moved: it changed after it was ingested (its `ETag` is {} instead of {})",
                                 object_from.remote_path, source_info.etag, object_from.etag);
-                        /// Everything below must describe the generation this HEAD saw, which the check above ties
-                        /// to the one that was read: the provenance a later attempt matches against, the tags, and
-                        /// the copied bytes. The version names that generation whatever the destination guard is, so
-                        /// an unguarded move (a preserved path, a prefixless one) pins its copy and its delete to it
-                        /// too instead of taking whatever the key holds by then. Empty on unversioned buckets.
+                        /// Everything below must describe the generation this `HEAD` saw (tied by the check above to the one read);
+                        /// the version pins the copy and the delete to it even for unguarded moves. Empty on unversioned buckets.
                         const String & source_version_id = source_info.version_id;
                         /// A guarded move re-uploads the object, so the tags are read explicitly rather than through
                         /// the `HeadObject` tag count, which restricted credentials do not get to see.
@@ -960,9 +940,8 @@ void ObjectStorageQueuePostProcessor::moveAzureBlobs(const StoredObjects & objec
                 {
                     auto copy_object = [&]() -> CopyResult
                     {
-                        /// The source never hands over an untagged blob for a move, and its read was
-                        /// pinned to this very generation, so an untagged blob here would be moved as
-                        /// whatever generation exists now.
+                        /// The source never hands over an untagged blob for a move (its read was pinned to this generation),
+                        /// so an untagged one here would be moved as whatever generation exists now.
                         const String & src_etag = object_from.etag;
                         if (src_etag.empty())
                             throw Exception(

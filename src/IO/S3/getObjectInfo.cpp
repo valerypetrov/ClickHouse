@@ -89,9 +89,8 @@ namespace
         if (with_metadata)
             object_info.metadata = result.GetMetadata();
 
-        /// `HeadObject` reports the tag count, so an untagged object costs no `GetObjectTagging` round
-        /// trip, and anonymous or restricted readers are never sent a request they cannot make. A caller
-        /// that must see tags a restricted `HeadObject` hides asks for them with `getObjectTags()`.
+        /// `HeadObject` reports the tag count, so untagged objects cost no `GetObjectTagging` call; callers that
+        /// need tags hidden from a restricted `HeadObject` ask via `getObjectTags`.
         if (with_tags && result.GetTagCount() > 0)
             object_info.tags = getObjectTags(client, bucket, key, version_id);
 

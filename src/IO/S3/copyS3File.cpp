@@ -849,9 +849,8 @@ namespace
         const ReadSettings read_settings;
         std::function<void()> fallback_method;
 
-        /// Whether the endpoint refused the copy because the source is not the generation the copy is
-        /// pinned to. The SDK has no typed model error for `PreconditionFailed`, so the raw code is kept
-        /// in the exception name; the HTTP status is checked as well, for a marshaller that keeps it.
+        /// Whether the endpoint refused the copy because the source is not the pinned generation; the SDK has
+        /// no typed error for `PreconditionFailed`, so the raw code and the HTTP status are both checked.
         bool sourceIsNotThePinnedGeneration(const Aws::S3::S3Error & error) const
         {
             return !copy_settings.source_if_match.empty() && isPreconditionFailed(error);

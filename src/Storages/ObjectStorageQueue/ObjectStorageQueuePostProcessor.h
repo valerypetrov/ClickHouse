@@ -42,15 +42,8 @@ public:
         String keeper_identity_);
 
     /// Apply post-processing to the objects. Can throw exceptions in case of misconfiguration.
-    /// The method intercepts exceptions caused by remote storage interaction and reports them to the log,
-    /// with one exception. `FILE_CHANGED_DURING_READ` (Azure) or `S3_OBJECT_CHANGED_DURING_READ` (S3)
-    /// means that an object is no longer the generation
-    /// that was ingested: it was overwritten after it was read, and the newer generation has never been
-    /// ingested. The object is left in place, every other object of the batch is still handled, and
-    /// the error is then rethrown, so that the caller does not commit the file as processed - which
-    /// would leave the newer generation in the bucket and never ingest it. A post-processing that
-    /// merely failed (a network error, say) is reported to the log only, as before: the generation
-    /// that was ingested is then still the one in the bucket, and committing the file is right.
+    /// Storage errors are only logged, except `FILE_CHANGED_DURING_READ` / `S3_OBJECT_CHANGED_DURING_READ`: those are rethrown
+    /// after the whole batch is handled, leaving the changed object in place, so the file is not committed as processed.
     void process(
         const StoredObjects & objects,
         UnorderedSetWithMemoryTracking<String> & failed_object_paths) const;
@@ -78,10 +71,8 @@ private:
         DestinationCollision,
     };
 
-    /// The first object of a batch found to be no longer the generation that was ingested
-    /// (`FILE_CHANGED_DURING_READ` or `S3_OBJECT_CHANGED_DURING_READ`), remembered while the rest of
-    /// the batch is handled, so that
-    /// `process` can rethrow it afterwards. Safe to share between the threads that handle a batch.
+    /// The first object of a batch found to be no longer the ingested generation, remembered while
+    /// the rest of the batch is handled so that `process` can rethrow it. Thread-safe.
     class ChangedGeneration
     {
     public:
@@ -102,13 +93,11 @@ private:
     void reportMoveCollision(const StoredObject & source, const StoredObject & destination) const;
 
     /// Move processed objects to another prefix. Each of the three rethrows the first
-    /// `FILE_CHANGED_DURING_READ` / `S3_OBJECT_CHANGED_DURING_READ` once the whole batch has been
-    /// handled (see `process`).
+    /// `FILE_CHANGED_DURING_READ` / `S3_OBJECT_CHANGED_DURING_READ` once the whole batch is handled (see `process`).
     void moveWithinBucket(const StoredObjects & objects, const String & move_prefix, bool preserve_path, StoredObjects & successful_objects) const;
     /// Move processed S3 objects, possibly to another S3 storage
-    /// Deletes each object by the version a `HEAD` reports for it, after checking that version is still
-    /// the generation that was ingested. Returns false when no version comes back, leaving an unversioned
-    /// bucket to the batched delete that matches on `ETag` alone.
+    /// Deletes by the `HEAD` version after checking it is the ingested generation; false (unversioned bucket) leaves it to the `ETag`
+    /// delete.
     bool deleteVersionedS3Objects(const StoredObjects & objects, StoredObjects & successful_objects) const;
 
     void moveS3Objects(const StoredObjects & objects, StoredObjects & successful_objects) const;

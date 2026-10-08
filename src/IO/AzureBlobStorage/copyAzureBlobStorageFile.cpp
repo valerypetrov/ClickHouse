@@ -440,10 +440,8 @@ void copyAzureBlobStorageFile(
     auto log = getLogger("copyAzureBlobStorageFile");
     bool is_native_copy_done = false;
 
-    /// The native copy carries no bytes through this process, so the only way to pin it to the
-    /// generation the caller selected is the source-side precondition: the endpoint transfers exactly
-    /// that generation or refuses with `412`, mapped to `FILE_CHANGED_DURING_READ` below. `ETag`
-    /// conditions want the quoted form, while a tag from a listing is bare.
+    /// The native copy moves no bytes through us, so a source-side `If-Match` is the only way to pin it;
+    /// the endpoint answers `412` (mapped to `FILE_CHANGED_DURING_READ`). It wants the quoted `ETag`.
     const Azure::ETag source_etag_condition
         = src_etag.empty() ? Azure::ETag{} : Azure::ETag(AzureBlobStorage::toQuotedETag(src_etag));
 

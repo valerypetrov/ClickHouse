@@ -1854,14 +1854,8 @@ std::unique_ptr<ReadBufferFromFileBase> createReadBuffer(
     modified_read_settings.use_page_cache_for_disks_without_file_cache = false;
     modified_read_settings.filesystem_cache_settings.boundary_alignment = settings[Setting::filesystem_cache_boundary_alignment];
 
-    /// Pin the read to the object generation seen here (etag from the LIST/HEAD): a GET with a
-    /// different ETag means an in-place overwrite, reported as S3_OBJECT_CHANGED_DURING_READ or
-    /// AZURE_OBJECT_CHANGED_DURING_READ instead of torn cross-generation data.
-    ///
-    /// `s3_validate_etag_on_read` and `azure_validate_etag_on_read` choose whether a plain read is
-    /// protected from a torn read. They do not govern `require_read_pinned_to_generation`: the caller
-    /// that sets that flag acts on the ingested generation after the read, so reading a different
-    /// generation would lose a file no matter how the settings are configured.
+    /// Pin the read to the generation seen in `LIST`/`HEAD`, so an in-place overwrite throws instead of yielding torn data;
+    /// `require_read_pinned_to_generation` forces this regardless of `s3_validate_etag_on_read`/`azure_validate_etag_on_read`.
     String pinned_generation;
     if (object_info.metadata.has_value() && (validate_etag_on_read || object_info.require_read_pinned_to_generation))
         pinned_generation = object_info.metadata->etag;

@@ -24,14 +24,8 @@ using BlobStorageLogWriterPtr = std::shared_ptr<BlobStorageLogWriter>;
 
 
 /// Deletes one file from S3.
-///
-/// A non-empty `etag_to_match` pins the delete to one generation of the object: it is sent as
-/// `If-Match`, and an endpoint that evaluates it (S3 does, on general purpose and directory buckets
-/// alike) refuses to delete an object that was written over since that generation was named. The
-/// refusal (`412 Precondition Failed`, or the `409 Conflict` S3 answers when a concurrent write got
-/// in first) is reported as `FILE_CHANGED_DURING_READ`, which is not a "does not exist" and is not
-/// swallowed by `if_exists`. An endpoint that ignores `If-Match` on a `DELETE` (some S3-compatible
-/// ones do) deletes by key, as it did before the header was sent.
+/// A non-empty `etag_to_match` pins the delete to one generation via `If-Match`; a refusal (`412`/`409`) is
+/// reported as `FILE_CHANGED_DURING_READ`, not swallowed by `if_exists`. Endpoints ignoring `If-Match` delete by key.
 void deleteFileFromS3(
     const std::shared_ptr<const S3::Client> & s3_client,
     const String & bucket,
@@ -46,12 +40,8 @@ void deleteFileFromS3(
     const String & version_id = {});
 
 /// Deletes multiple files from S3 using batch requests when it's possible.
-///
-/// `etags_to_match`, when not empty, is parallel to `keys`: a non-empty entry pins the delete of that
-/// key to one generation of the object (the `ETag` element of the `DeleteObjects` request, or
-/// `If-Match` when the objects are deleted one by one), see `deleteFileFromS3`. Every object that can
-/// be deleted is deleted before a refused one is reported with `FILE_CHANGED_DURING_READ`, and a
-/// refused object is not among `successful_keys`.
+/// `etags_to_match`, if not empty, is parallel to `keys` and pins each delete to one generation (see `deleteFileFromS3`);
+/// refused objects are reported with `FILE_CHANGED_DURING_READ` only after all others are deleted.
 void deleteFilesFromS3(
     const std::shared_ptr<const S3::Client> & s3_client,
     const String & bucket,

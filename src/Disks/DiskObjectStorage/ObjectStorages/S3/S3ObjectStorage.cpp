@@ -449,9 +449,8 @@ void S3ObjectStorage::removeObjectImpl(const StoredObject & object, bool if_exis
     auto blob_storage_log = BlobStorageLogWriter::create(disk_name);
     const auto [bucket, key] = splitBucketAndKey(object.remote_path);
 
-    /// A `StoredObject` that carries an `ETag` names one generation of the object, not just a key:
-    /// the delete is pinned to that generation with `If-Match`, so an object written over after the
-    /// caller looked at it is left in place with `FILE_CHANGED_DURING_READ` instead of being deleted.
+    /// An `ETag` on the `StoredObject` pins the delete to that generation with `If-Match`, so an
+    /// overwritten object is left in place with `FILE_CHANGED_DURING_READ`.
     deleteFileFromS3(client.get(), bucket, key, if_exists,
                       blob_storage_log, object.local_path, object.bytes_size,
                       ProfileEvents::DiskS3DeleteObjects, object.etag);
@@ -779,10 +778,8 @@ void S3ObjectStorage::copyObject( // NOLINT
     /// mix another version's bytes into a guarded copy. Empty on unversioned buckets.
     const String source_version_id
         = pinned_version_id.empty() ? (guarded_copy ? source_info.version_id : String{}) : pinned_version_id;
-    /// A caller that already built provenance from an earlier lookup pins that generation here, so the
-    /// copy fails rather than stamping it onto bytes from a newer one; otherwise the source object's
-    /// own `ETag` names the generation the caller listed. One value, so the native copy and the
-    /// read-and-write fallback are pinned to the same generation.
+    /// Pin to the caller's provenance `ETag` if given, else the source's own `ETag`; one value, so the
+    /// native copy and the read-and-write fallback use the same generation.
     const String source_if_match = write_settings.object_storage_copy_source_if_match.empty()
         ? object_from.etag
         : write_settings.object_storage_copy_source_if_match;

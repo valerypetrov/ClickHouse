@@ -29,16 +29,11 @@ struct S3CopyFileSettings
     /// Restated on the re-upload a guard forces, which `CopyObject` would have carried for free.
     std::optional<S3::ObjectHeaders> source_headers;
     std::optional<ObjectAttributes> source_tags;
-    /// The `ETag` of the source generation the caller decided to copy, or empty for a copy by key
-    /// alone. The native copy carries it as `x-amz-copy-source-if-match` on the `CopyObject` and on
-    /// every `UploadPartCopy`, so a source overwritten in place after the caller looked at it is not
-    /// copied as its newer generation and a multipart copy cannot stitch two generations together:
-    /// the copy throws `S3_OBJECT_CHANGED_DURING_READ` instead. The read-and-write fallback reads
-    /// through `fallback_file_reader`, which the caller has to pin to the same generation itself.
+    /// The source `ETag` to pin the copy to (sent as `x-amz-copy-source-if-match` on `CopyObject` and every
+    /// `UploadPartCopy`), or empty; the caller must pin `fallback_file_reader` to the same generation.
     String source_if_match;
-    /// The version of the source to copy on a versioned bucket, or empty for the current version.
-    /// The native copy addresses the source as `bucket/key?versionId=...`; the read-and-write
-    /// fallback has to be opened at the same version by the caller.
+    /// The source version to copy on a versioned bucket, or empty for the current one; the read-and-write
+    /// fallback must be opened at the same version by the caller.
     String source_version_id;
 };
 

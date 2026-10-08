@@ -419,9 +419,8 @@ void AzureObjectStorage::removeObjectImpl(
 
     auto params = connection_params.get();
 
-    /// A `StoredObject` that carries an `ETag` names one generation of the blob, not just a path: the
-    /// delete is pinned to that generation with `If-Match`, so a blob overwritten after the caller
-    /// looked at it is left in place instead of being deleted. The header wants the quoted form.
+    /// An `ETag` on the `StoredObject` pins the delete to that blob generation with `If-Match`,
+    /// so a blob overwritten since the caller looked at it is left in place.
     const bool pinned_to_etag = !object.etag.empty();
     const Azure::ETag if_match = pinned_to_etag ? Azure::ETag(AzureBlobStorage::toQuotedETag(object.etag)) : Azure::ETag();
 
@@ -455,9 +454,8 @@ void AzureObjectStorage::removeObjectImpl(
         error_code = static_cast<Int32>(e.StatusCode);
         error_message = e.Message;
 
-        /// The precondition did not hold: the blob is not the generation the caller selected, so
-        /// nothing was deleted. This is not "the object does not exist" and must not be swallowed
-        /// by `if_exists`; the caller decides whether to look at the new generation and start over.
+        /// A failed precondition means the blob is a different generation, not that it is missing,
+        /// so it must not be swallowed by `if_exists`.
         if (pinned_to_etag && e.StatusCode == Azure::Core::Http::HttpStatusCode::PreconditionFailed)
         {
             if (blob_storage_log)
@@ -801,19 +799,15 @@ void AzureObjectStorage::copyObject( /// NOLINT
     auto settings_ptr = settings.get();
     auto client_ptr = client.get();
 
-    /// A source that carries an `ETag` names the generation the caller has seen (a queue copies the
-    /// generation it ingested); the copy is pinned to it and transfers that generation or fails.
-    /// Its size normally comes from the same listing entry. When the caller knows neither, or
-    /// knows the generation but not its size, one `HEAD` supplies what is missing, and the size
-    /// and the generation then come from that same `HEAD`.
+    /// A source `ETag` pins the copy to the generation the caller saw; if it or the size is missing,
+    /// one `HEAD` supplies both, so they describe the same generation.
     String src_etag = object_from.etag;
     size_t src_size = object_from.bytes_size;
     if (src_etag.empty() || src_size == StoredObject::UnknownSize)
     {
         auto object_metadata = getObjectMetadata(object_from.remote_path, false);
-        /// The `HEAD` was made in order to pin the copy, so a `HEAD` that names no generation cannot
-        /// deliver what it was made for: the copy would proceed without `If-Match`. This is decided
-        /// before the comparison below: an endpoint that reports nothing has not reported a change.
+        /// Without an `ETag` the copy would proceed unpinned, so fail; checked before the comparison below,
+        /// because an endpoint that reports nothing has not reported a change.
         if (object_metadata.etag.empty())
             throw Exception(
                 ErrorCodes::AZURE_BLOB_STORAGE_ERROR,

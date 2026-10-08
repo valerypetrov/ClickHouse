@@ -1011,9 +1011,8 @@ def test_move_fresh_attempt_recognizes_committed_copy(started_cluster, engine_na
     finally:
         node.query(f"SYSTEM DISABLE FAILPOINT {PAUSE_AFTER_MOVE_COPY_FAILPOINT}")
 
-    # The restarted server lists the file while the crashed attempt's processing node is still
-    # there and caches `Processing` for it; that status outlives the node the ttl cleanup then
-    # reaps, so re-attach once the node is gone to let a fresh attempt start.
+    # The restarted server caches `Processing` for the file while the crashed attempt's node still exists;
+    # that outlives the node, so re-attach once the ttl cleanup has reaped it.
     processing_path = f"/clickhouse/test_{table_name}/processing"
     wait_until(
         lambda: node.query(

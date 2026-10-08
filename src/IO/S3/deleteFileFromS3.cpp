@@ -29,9 +29,8 @@ namespace ErrorCodes
 namespace
 {
 
-/// The endpoint refused a pinned delete because the generation at the key is not the one named by
-/// `If-Match`: `412 Precondition Failed`, or `409 Conflict` when a concurrent write or delete of the
-/// key got in before the conditional delete was evaluated. Neither means that the key is absent.
+/// The endpoint refused a pinned delete: `412 Precondition Failed`, or `409 Conflict` after a concurrent
+/// write or delete of the key. Neither means the key is absent.
 bool isRefusedPrecondition(const Aws::Client::AWSError<Aws::S3::S3Errors> & error)
 {
     const auto code = error.GetResponseCode();
@@ -97,10 +96,8 @@ void deleteFileFromS3(
     }
     else if (!etag_to_match.empty() && isRefusedPrecondition(outcome.GetError()))
     {
-        /// The object is not the generation the caller named, so nothing was deleted. This is not
-        /// "the object does not exist" and must not be swallowed by `if_exists`; the caller decides
-        /// whether to look at the new generation and start over. Mapped from the raw response code
-        /// here, because an `S3Exception` keeps only the SDK error type, not the HTTP status.
+        /// The object is a different generation, which is not "does not exist" and must not be swallowed by
+        /// `if_exists`. Mapped from the raw response code, because `S3Exception` keeps no HTTP status.
         throw Exception(
             ErrorCodes::FILE_CHANGED_DURING_READ,
             "Object {} was not deleted: it changed after it was selected (its `ETag` is no longer {})",
@@ -159,9 +156,8 @@ void deleteFilesFromS3(
     const String empty_string;
     const auto etag_to_match_of = [&](size_t i) -> const String & { return i < etags_to_match.size() ? etags_to_match[i] : empty_string; };
 
-    /// A pinned delete the endpoint refused because the generation at the key was not the one named.
-    /// It is reported once every other object of the request has been deleted, so that one object
-    /// written over by somebody else does not leave the rest in place.
+    /// A refused pinned delete is reported only after the other objects are deleted, so one overwritten
+    /// object does not leave the rest in place.
     std::exception_ptr changed_generation_error;
 
     if (try_batch_delete)
@@ -285,9 +281,8 @@ void deleteFilesFromS3(
                         }
                         else if (pinned_keys.contains(err.GetKey()) && isRefusedPreconditionCode(err.GetCode()))
                         {
-                            /// The object is not the generation that was named for it, so it stayed in
-                            /// place. It is neither removed nor absent, and it is reported after the
-                            /// other chunks have been deleted.
+                            /// The object stayed in place (neither removed nor absent); it is reported
+                            /// after the other chunks are deleted.
                             non_existing_keys.erase(err.GetKey());
 
                             if (!changed_generation_error)

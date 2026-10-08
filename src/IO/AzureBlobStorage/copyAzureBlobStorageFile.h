@@ -42,9 +42,8 @@ void copyAzureBlobStorageFile(
     BlobStorageLogWriterPtr blob_storage_log = {},
     /// Pass `*` to fail instead of overwriting the destination blob.
     const String & dest_if_none_match = {},
-    /// The `ETag` of the source generation the caller decided to copy, or empty when it is not known.
-    /// The native copy is pinned to it with a source-side `If-Match`, so a source blob overwritten
-    /// after the caller looked at it throws `FILE_CHANGED_DURING_READ` instead of being copied.
+    /// The `ETag` of the source generation to copy, or empty if unknown; the native copy is pinned to it
+    /// with a source-side `If-Match` and throws `FILE_CHANGED_DURING_READ` if the source changed.
     const String & src_etag = {});
 
 
