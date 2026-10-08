@@ -131,6 +131,9 @@ public:
     /// Like `tryGetObjectMetadata`, but for one version of the object; an empty `version_id` means the current one.
     std::optional<ObjectMetadata> tryGetObjectVersionMetadata(const std::string & path, const String & version_id, bool with_tags) const;
 
+    /// The callback that `readObject` gives its buffers to refresh expired credentials.
+    const S3CredentialsRefreshCallback & getCredentialsRefreshCallback() const { return credentials_refresh_callback; }
+
     void copyObject( /// NOLINT
         const StoredObject & object_from,
         const StoredObject & object_to,

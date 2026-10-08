@@ -820,7 +820,7 @@ void ObjectStorageQueuePostProcessor::moveS3Objects(const StoredObjects & object
                                         s3_settings->request_settings, read_settings_to_use,
                                         /*use_external_buffer=*/false, /*offset=*/0, /*read_until_position=*/0,
                                         /*restricted_seek=*/false, /*file_size=*/std::nullopt,
-                                        /*credentials_refresh_callback=*/[]() -> std::unique_ptr<const S3::Client> { return nullptr; },
+                                        s3_storage->getCredentialsRefreshCallback(),
                                         /*blob_storage_log=*/nullptr, /*expected_etag=*/object_from.etag);
                                 },
                                 /*object_metadata=*/provenance,
