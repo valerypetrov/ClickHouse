@@ -1,4 +1,5 @@
 #include <Common/UTF8Helpers.h>
+#include <Common/StringSearcher.h>
 #include <Common/StringUtils.h>
 #include <Poco/UTF8Encoding.h>
 #include <Poco/Unicode.h>
@@ -287,13 +288,13 @@ std::optional<uint32_t> convertUTF8ToCodePoint(const char * in_bytes, size_t in_
 
 bool isASCIIReachableByCaseFolding(char c)
 {
-    /// Derived from Poco's tables rather than hardcoded, so it cannot drift from the folding it describes.
+    /// Derived from `utf8CaseFold` rather than hardcoded, so it cannot drift from the folding it describes.
     static const std::array<bool, 128> reachable = []
     {
         std::array<bool, 128> result{};
         for (int code_point = 0x80; code_point <= 0x10FFFF; ++code_point)
         {
-            const int folded = Poco::Unicode::toLower(code_point);
+            const int folded = utf8CaseFold(code_point);
             if (folded >= 0x80)
                 continue;
 
