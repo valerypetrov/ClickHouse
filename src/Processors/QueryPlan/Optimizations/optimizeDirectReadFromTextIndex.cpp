@@ -681,6 +681,14 @@ private:
         if (MergeTreeIndexConditionText::isPerTokenPatternFunction(function_name))
             per_token_pattern_index = choosePerTokenPatternFunctionIndex(function_node, canonical_node);
 
+        /// The index is analyzed under a `CAST` that drops `Nullable` and throws on NULL. Direct read replaces or
+        /// short-circuits the predicate, so `NOT hasToken(CAST(s, 'String'), 'a')` would return the NULL row
+        /// instead of throwing. Use the index only to skip granules then.
+        const bool drops_nullable = std::ranges::any_of(canonical_node.children, [](const auto * argument)
+        {
+            return unwrapLosslessConversion(argument, /*allow_drop_nullable=*/ false) != unwrapLosslessConversion(argument);
+        });
+
         NameSet used_index_columns;
         std::vector<SelectedCondition> selected_conditions;
 
@@ -714,7 +722,7 @@ private:
             /// Use direct read only when enabled and the entry is direct-read-eligible (has `index`) and has no
             /// patched parts. Otherwise just inject the tokenizer/preprocessor/postprocessor (no virtual column),
             /// same as None mode.
-            if (!direct_read_from_text_index || !info.index || info.has_patched_parts
+            if (!direct_read_from_text_index || !info.index || info.has_patched_parts || drops_nullable
                 || search_query->getDirectReadMode() == TextIndexDirectReadMode::None)
             {
                 selected_conditions.emplace_back(search_query, index_name, String{}, &info, is_index_analyzed);
