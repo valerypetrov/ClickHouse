@@ -381,7 +381,8 @@ public:
         const HTTPHeaderEntries & headers_ = {},
         const String & method_ = "",
         ASTPtr partition_by_ = nullptr,
-        bool distributed_processing_ = false);
+        bool distributed_processing_ = false,
+        bool is_replayed_definition_ = false);
 
     String getName() const override
     {
@@ -417,10 +418,11 @@ public:
         std::string addresses_expr;
     };
 
-    static Configuration getConfiguration(ASTs & args, const ContextPtr & context, const StorageID * table_id = nullptr);
+    static Configuration getConfiguration(
+        ASTs & args, const ContextPtr & context, const StorageID * table_id = nullptr, bool is_replayed_definition = false);
 
-    /// Evaluates arguments, moves key-value args (`headers(...)`, `http_method='...'`) to the end.
-    /// Returns the count of remaining positional arguments.
+    /// Evaluates all arguments and moves `headers(...)` before the key-value arguments (to the end if there are none).
+    /// With `out_http_method`, also reads `http_method = '...'` and moves it to the end. Returns the count of the other arguments.
     static size_t evalArgsAndCollectHeaders(
         ASTs & url_function_args,
         HTTPHeaderEntries & header_entries,
@@ -447,7 +449,12 @@ public:
     /// override (named-collection) matches the URL resolved via `url_base`.
     /// `skip_userinfo` skips the rewrite when the resolved URL embeds credentials,
     /// to avoid leaking them through the persisted CREATE TABLE AST.
-    static void overrideURLInEngineArgs(ASTs & args, const String & resolved_url, const ContextPtr & context, bool skip_userinfo);
+    static void overrideURLInEngineArgs(
+        ASTs & args, const String & resolved_url, const ContextPtr & context, bool skip_userinfo, bool is_replayed_definition = false);
+
+private:
+    /// See `StorageObjectStorageConfiguration::is_replayed_definition`.
+    const bool is_replayed_definition;
 };
 
 
