@@ -4,8 +4,6 @@
 #include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterDefs.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/SQLQueryPiece.h>
 
-#include <functional>
-
 namespace DB::PrometheusQueryToSQL
 {
 struct ConverterContext;
@@ -19,10 +17,9 @@ bool isSortFunction(std::string_view function_name);
 SQLQueryPiece applySortFunction(
     const PrometheusQueryTree::Function * function_node, std::vector<SQLQueryPiece> && arguments, ConverterContext & context);
 
-/// Re-keys the sort rank map of `query_piece` (if any) after a transform changed the series ids (`group`);
-/// `transform_group` must build the same group-changing expression the transform applied to the data.
-void rekeySortRankSubquery(
-    SQLQueryPiece & query_piece, const std::function<ASTPtr(ASTPtr)> & transform_group, ConverterContext & context);
+/// Returns `anyIf(group, isNotNull(values[1]))`: the source series of a row merged by GROUP BY.
+/// It's the one with a value at the step, because an ordered result has only one step.
+ASTPtr makeSortSourceOfMergedRow(ASTPtr group, ASTPtr values);
 
 /// Makes `query` (a vector grid with a column `sort_source`) the value of `query_piece`,
 /// ordering each row as its `sort_source` series is ordered in `source_rank_subquery`.

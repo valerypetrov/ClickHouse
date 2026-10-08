@@ -266,8 +266,12 @@ SQLQueryPiece applyLabelManipulationFunction(
 
         case StoreMethod::VECTOR_GRID:
         {
+            /// An order fixed by an inner sort*() call is kept through the series each row comes from.
+            String source_rank_subquery = res.sort_rank_subquery;
+
             /// Step 1:
             /// SELECT f(group, 'arg2', 'arg3', ...) AS new_group, any(values) AS values
+            ///        [, anyIf(group, isNotNull(values[1])) AS sort_source]
             /// FROM <vector_grid>
             /// GROUP BY new_group
             /// HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, new_group) = 0
@@ -296,6 +300,14 @@ SQLQueryPiece applyLabelManipulationFunction(
                     SQLSubquery{context.subqueries.size(), std::move(first_argument.select_query), SQLSubqueryType::TABLE});
                 builder.from_table = context.subqueries.back().name;
 
+                if (!source_rank_subquery.empty())
+                {
+                    builder.select_list.push_back(makeSortSourceOfMergedRow(
+                        make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Group}),
+                        make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Values})));
+                    builder.select_list.back()->setAlias(ColumnNames::SortSource);
+                }
+
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
                 builder.having = makeASTFunction(
@@ -310,7 +322,7 @@ SQLQueryPiece applyLabelManipulationFunction(
             }
 
             /// Step 2:
-            /// SELECT new_group AS group, values
+            /// SELECT new_group AS group, values [, sort_source]
             /// FROM step1
             ASTPtr column_renaming_query;
             {
@@ -321,6 +333,9 @@ SQLQueryPiece applyLabelManipulationFunction(
 
                 builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Values));
 
+                if (!source_rank_subquery.empty())
+                    builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::SortSource));
+
                 context.subqueries.emplace_back(
                     SQLSubquery{context.subqueries.size(), std::move(label_replacing_query), SQLSubqueryType::TABLE});
                 builder.from_table = context.subqueries.back().name;
@@ -328,24 +343,10 @@ SQLQueryPiece applyLabelManipulationFunction(
                 column_renaming_query = builder.getSelectQuery();
             }
 
-            res.select_query = std::move(column_renaming_query);
-
-            /// The series ids changed, so an order fixed by an inner sort*() call must be re-keyed the same way.
-            rekeySortRankSubquery(
-                res,
-                [&](ASTPtr group)
-                {
-                    ASTs group_function_args;
-                    group_function_args.push_back(std::move(group));
-                    size_t array_argument_index = impl_info->array_argument_index;
-                    insertAtEnd(group_function_args, collectStringArguments(arguments, 1, array_argument_index));
-                    if (array_argument_index != static_cast<size_t>(-1))
-                        group_function_args.push_back(collectStringArgumentsAsArray(arguments, array_argument_index));
-                    auto group_function = makeASTFunction(impl_info->ch_function_name);
-                    group_function->arguments->children = std::move(group_function_args);
-                    return group_function;
-                },
-                context);
+            if (source_rank_subquery.empty())
+                res.select_query = std::move(column_renaming_query);
+            else
+                setVectorGridRankedBySource(res, std::move(column_renaming_query), source_rank_subquery, context);
 
             if (dest_label == kMetricName)
                 res.metric_name_dropped = false;

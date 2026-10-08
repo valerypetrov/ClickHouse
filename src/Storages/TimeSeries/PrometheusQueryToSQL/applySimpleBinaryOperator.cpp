@@ -348,17 +348,22 @@ namespace
                 make_intrusive<ASTIdentifier>(Strings{left, ColumnNames::Values}),
                 make_intrusive<ASTIdentifier>(Strings{right, ColumnNames::Values}));
 
+            ASTPtr sort_source;
+            if (!sort_rank_subquery.empty())
+            {
+                sort_source = make_intrusive<ASTIdentifier>(Strings{group_right ? right : left, ColumnNames::OriginalGroup});
+                if (check_no_duplicate_groups)
+                    sort_source = makeSortSourceOfMergedRow(std::move(sort_source), values->clone());
+            }
+
             if (check_no_duplicate_groups)
                 values = makeASTFunction("any", std::move(values));
 
             builder.select_list.push_back(std::move(values));
             builder.select_list.back()->setAlias(ColumnNames::Values);
 
-            if (!sort_rank_subquery.empty())
+            if (sort_source)
             {
-                ASTPtr sort_source = make_intrusive<ASTIdentifier>(Strings{group_right ? right : left, ColumnNames::OriginalGroup});
-                if (check_no_duplicate_groups)
-                    sort_source = makeASTFunction("any", std::move(sort_source));
                 builder.select_list.push_back(std::move(sort_source));
                 builder.select_list.back()->setAlias(ColumnNames::SortSource);
             }

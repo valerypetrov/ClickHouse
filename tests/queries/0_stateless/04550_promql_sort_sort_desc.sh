@@ -76,6 +76,23 @@ promql_client -q "sort(up) and up"
 echo "-- sort_desc(up) unless up{instance='host3'}: 'unless' keeps the order fixed by sort_desc() on its left side (30, 10)"
 promql_client -q "sort_desc(up) unless up{instance='host3'}"
 
+$CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -m -q "
+INSERT INTO ts_tags VALUES
+    ('00000000-0000-0000-0000-000000000004', 'a', {'job':'x'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
+    ('00000000-0000-0000-0000-000000000005', 'b', {'job':'x'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC')),
+    ('00000000-0000-0000-0000-000000000006', 'c', {'job':'y'}, toDateTime64(1699999000, 3, 'UTC'), toDateTime64(1700001000, 3, 'UTC'));
+INSERT INTO ts_data VALUES
+    ('00000000-0000-0000-0000-000000000004', toDateTime64(1700000000, 3, 'UTC'), 3),
+    ('00000000-0000-0000-0000-000000000005', toDateTime64(1700000000, 3, 'UTC'), 10),
+    ('00000000-0000-0000-0000-000000000006', toDateTime64(1700000000, 3, 'UTC'), 7);
+"
+
+echo "-- (sort(a|b|c) and b|c) * 1: a series removed by 'and' does not keep its rank after the metric name is dropped (y=7, x=10)"
+promql_client -q "(sort({__name__=~'a|b|c'}) and on(__name__) {__name__=~'b|c'}) * 1"
+
+echo "-- label_replace() of the same: the series removed by 'and' does not keep its rank either (y=7, x=10)"
+promql_client -q "label_replace(sort({__name__=~'a|b|c'}) and on(__name__) {__name__=~'b|c'}, '__name__', 'm', '', '')"
+
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts"
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts_data"
 $CLICKHOUSE_CLIENT --allow_experimental_time_series_table 1 -q "DROP TABLE ts_tags"

@@ -244,37 +244,11 @@ SQLQueryPiece applySortFunction(
     return std::move(argument);
 }
 
-void rekeySortRankSubquery(
-    SQLQueryPiece & query_piece, const std::function<ASTPtr(ASTPtr)> & transform_group, ConverterContext & context)
+ASTPtr makeSortSourceOfMergedRow(ASTPtr group, ASTPtr values)
 {
-    if (query_piece.sort_rank_subquery.empty())
-        return;
-
-    /// Step 1:
-    /// SELECT <transform_group(sort_group)> AS new_group, min(sort_rank) AS sort_rank
-    /// FROM <sort_rank_subquery>
-    /// GROUP BY new_group
-    ASTPtr rekeying_query;
-    {
-        SelectQueryBuilder builder;
-
-        builder.select_list.push_back(transform_group(make_intrusive<ASTIdentifier>(ColumnNames::SortGroup)));
-        builder.select_list.back()->setAlias(ColumnNames::NewGroup);
-
-        builder.select_list.push_back(makeASTFunction("min", make_intrusive<ASTIdentifier>(ColumnNames::SortRank)));
-        builder.select_list.back()->setAlias(ColumnNames::SortRank);
-
-        builder.from_table = query_piece.sort_rank_subquery;
-
-        builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
-
-        rekeying_query = builder.getSelectQuery();
-    }
-
-    /// Step 2:
-    /// SELECT new_group AS sort_group, sort_rank
-    /// FROM step1
-    setSortRankSubquery(query_piece, std::move(rekeying_query), make_intrusive<ASTIdentifier>(ColumnNames::SortRank), context);
+    return makeASTFunction("anyIf",
+        std::move(group),
+        makeASTFunction("isNotNull", makeASTFunction("arrayElement", std::move(values), make_intrusive<ASTLiteral>(1u))));
 }
 
 void setVectorGridRankedBySource(
@@ -316,6 +290,7 @@ void setOrResultWithSortRank(
     {
         if (rank_subquery.empty())
         {
+            /// A side without sort*() has no defined order, as in Prometheus, so its rows share one rank.
             builder.select_list.push_back(make_intrusive<ASTLiteral>(Array{}));
         }
         else

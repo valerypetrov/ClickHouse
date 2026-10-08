@@ -48,3 +48,9 @@
 -- sort_desc(up) unless up{instance='host3'}: 'unless' keeps the order fixed by sort_desc() on its left side (30, 10)
 [('__name__','up'),('instance','host1')]	2023-11-14 22:13:20.000	30
 [('__name__','up'),('instance','host2')]	2023-11-14 22:13:20.000	10
+-- (sort(a|b|c) and b|c) * 1: a series removed by 'and' does not keep its rank after the metric name is dropped (y=7, x=10)
+[('job','y')]	2023-11-14 22:13:20.000	7
+[('job','x')]	2023-11-14 22:13:20.000	10
+-- label_replace() of the same: the series removed by 'and' does not keep its rank either (y=7, x=10)
+[('__name__','m'),('job','y')]	2023-11-14 22:13:20.000	7
+[('__name__','m'),('job','x')]	2023-11-14 22:13:20.000	10

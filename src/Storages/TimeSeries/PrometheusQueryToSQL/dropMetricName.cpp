@@ -53,9 +53,13 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
             ///
             /// That's why we need the function timeSeriesThrowDuplicateSeriesIf() to detect such cases and throw an exception.
 
+            /// An order fixed by an inner sort*() call is kept through the series each row comes from.
+            String source_rank_subquery = query_piece.sort_rank_subquery;
+
             /// Step 1:
             /// SELECT timeSeriesRemoveTag(group, '__name__') AS new_group,
             ///        any(values) AS values
+            ///        [, anyIf(group, isNotNull(values[1])) AS sort_source]
             /// FROM <vector_grid>
             /// GROUP BY new_group
             /// HAVING timeSeriesThrowDuplicateSeriesIf(count() > 1, new_group) = 0
@@ -73,6 +77,14 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
                 context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), std::move(query_piece.select_query), SQLSubqueryType::TABLE});
                 builder.from_table = context.subqueries.back().name;
 
+                if (!source_rank_subquery.empty())
+                {
+                    builder.select_list.push_back(makeSortSourceOfMergedRow(
+                        make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Group}),
+                        make_intrusive<ASTIdentifier>(Strings{builder.from_table, ColumnNames::Values})));
+                    builder.select_list.back()->setAlias(ColumnNames::SortSource);
+                }
+
                 builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::NewGroup));
 
                 builder.having = makeASTFunction(
@@ -87,7 +99,7 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
             }
 
             /// Step 2:
-            /// SELECT new_group AS group, values
+            /// SELECT new_group AS group, values [, sort_source]
             /// FROM step1
             ASTPtr column_renaming_query;
             {
@@ -98,21 +110,20 @@ SQLQueryPiece dropMetricName(SQLQueryPiece && query_piece, ConverterContext & co
 
                 builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Values));
 
+                if (!source_rank_subquery.empty())
+                    builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::SortSource));
+
                 context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), std::move(metric_name_removing_query), SQLSubqueryType::TABLE});
                 builder.from_table = context.subqueries.back().name;
 
                 column_renaming_query = builder.getSelectQuery();
             }
 
-            query_piece.select_query = std::move(column_renaming_query);
+            if (source_rank_subquery.empty())
+                query_piece.select_query = std::move(column_renaming_query);
+            else
+                setVectorGridRankedBySource(query_piece, std::move(column_renaming_query), source_rank_subquery, context);
             query_piece.metric_name_dropped = true;
-
-            /// The series ids changed, so an order fixed by an inner sort*() call must be re-keyed the same way.
-            rekeySortRankSubquery(
-                query_piece,
-                [](ASTPtr group)
-                { return makeASTFunction("timeSeriesRemoveTag", std::move(group), make_intrusive<ASTLiteral>(kMetricName)); },
-                context);
 
             return std::move(query_piece);
         }
