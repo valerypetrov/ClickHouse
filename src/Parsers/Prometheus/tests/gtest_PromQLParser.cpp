@@ -2072,8 +2072,9 @@ PrometheusQueryTree(INSTANT_VECTOR):
     EXPECT_FALSE(query_tree.tryParse("foo:bar(x)", 3, &error_message, &error_pos));
     EXPECT_FALSE(error_message.empty());
 
-    /// Function names are case-sensitive, so `START()` is not a call of `start`.
-    EXPECT_FALSE(query_tree.tryParse("START()", 3, &error_message, &error_pos));
+    /// Function names are case-sensitive, so `START()` calls an unknown function `START`, as in Prometheus.
+    EXPECT_NE(parse("START()").find("Function(START)"), String::npos);
+    EXPECT_EQ(parse("x @ START()"), parse("x @ start()"));
 }
 
 

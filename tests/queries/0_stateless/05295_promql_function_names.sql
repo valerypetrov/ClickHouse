@@ -36,11 +36,13 @@ SELECT * FROM prometheusQuery('prometheus', 'start()', 110); -- { serverError NO
 SELECT * FROM prometheusQuery('prometheus', 'end()', 110); -- { serverError NOT_IMPLEMENTED }
 SELECT * FROM prometheusQuery('prometheus', 'vector(start())', 110); -- { serverError NOT_IMPLEMENTED }
 SELECT * FROM prometheusQuery('prometheus', 'end() - start()', 110); -- { serverError NOT_IMPLEMENTED }
-SELECT * FROM prometheusQuery('prometheus', 'START()', 110); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
+SELECT * FROM prometheusQuery('prometheus', 'START()', 110); -- { serverError UNKNOWN_FUNCTION }
+SELECT * FROM prometheusQuery('prometheus', 'End()', 110); -- { serverError UNKNOWN_FUNCTION }
 SELECT * FROM prometheusQuery('prometheus', 'start', 110);
 SELECT * FROM prometheusQuery('prometheus', 'end', 110);
 SELECT * FROM prometheusQueryRange('prometheus', 'rate @ start()', 100, 110, 10);
 SELECT * FROM prometheusQueryRange('prometheus', 'rate @ end ()', 100, 110, 10);
+SELECT * FROM prometheusQueryRange('prometheus', 'rate @ START()', 100, 110, 10);
 
 SELECT '-- limit_ratio is an aggregation operator';
 SELECT * FROM prometheusQuery('prometheus', 'limit_ratio(0.5, rate)', 110); -- { serverError NOT_IMPLEMENTED }

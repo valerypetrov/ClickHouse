@@ -148,11 +148,11 @@ namespace
         {
             auto next_token = PromQLLexer::nextToken();
             const size_t type = next_token->getType();
-            const String text = (type == METRIC_NAME || type == START || type == END) ? next_token->getText() : "";
+            const String text = type == METRIC_NAME ? next_token->getText() : "";
             /// Like in Prometheus, a name without ':' followed by '(' is a function name.
-            /// So are `start` and `end`, except right after '@'.
+            /// So are `start` and `end` in any letter case, except right after '@'.
             const bool is_name = (type == METRIC_NAME && !text.contains(':'))
-                || ((text == "start" || text == "end") && previous_token_type != AT);
+                || ((type == START || type == END) && previous_token_type != AT);
             if (is_name && isFollowedByLeftParen())
                 static_cast<antlr4::WritableToken *>(next_token.get())->setType(FUNCTION);
             if (next_token->getChannel() == antlr4::Token::DEFAULT_CHANNEL)
