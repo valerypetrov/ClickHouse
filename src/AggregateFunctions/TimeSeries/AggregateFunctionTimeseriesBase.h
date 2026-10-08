@@ -43,13 +43,24 @@ namespace ErrorCodes
 
 /// Grower for the bucket maps. The stock `HashTableGrower` quadruples the buffer below `max_size_degree`,
 /// which leaves the table at a load factor as low as ~0.125; with the whole `Bucket` stored in every cell that
-/// wastes a lot of memory across many aggregation states. Doubling keeps the same worst-case load factor (0.5)
-/// with at most half the slots of quadrupling.
+/// wastes a lot of memory across many aggregation states. This one doubles the buffer and fills it up to 3/4:
+/// bucket keys are mostly consecutive, and `TrivialHash` puts a run of them in consecutive cells without collisions.
 struct TimeSeriesBucketsHashTableGrower : public HashTableGrower<4>
 {
+    size_t maxFill() const { return bufSize() / 4 * 3; }
+    bool overflow(size_t elems) const { return elems > maxFill(); }
+
     void increaseSize()
     {
         ++size_degree;
+    }
+
+    /// `reserve` sizes the buffer here, so it follows the same 3/4 limit.
+    void set(size_t num_elems)
+    {
+        size_degree = 4;
+        while (overflow(num_elems))
+            ++size_degree;
     }
 };
 
