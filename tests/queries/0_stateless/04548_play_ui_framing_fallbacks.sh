@@ -303,6 +303,8 @@ echo "$page" | grep -q -F 'cancelTabRun(getActiveTab());' && echo 'Stop goes thr
 echo "$page" | grep -q -F 'if (options.payloadMeter) options.payloadMeter(payload_bytes.length);' && echo 'result payload bytes feed the IO meter: OK'
 echo "$page" | grep -q -F 'if (cellOwnsChrome(cell)) progressEl.renderPayloadFrom(cell.resources);' && echo 'live result payload bytes accumulate: OK'
 echo "$page" | grep -q -F 'payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,' && echo 'replayed result payload bytes accumulate: OK'
+# A replayed stream samples the IO rate from its own clock, so a restored snapshot keeps the `IO` term.
+echo "$page" | grep -q -F 'sampleIoRate(cell.resources, io_clock_base_ns + replay_ns);' && echo 'replayed IO rate is sampled: OK'
 # The result sends of remote shards to the initiator count too: an HTTP query has no own `NativeProtocolDataBytes`.
 echo "$page" | grep -q -F "|| e.name === 'NativeProtocolDataBytes' || e.name === 'NativeProtocolDataReceiveBytes'" && echo 'remote native result sends feed the IO meter: OK'
 # Result payload bytes make the meter live without any profile_events batch (send_profile_events = 0).

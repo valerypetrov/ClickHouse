@@ -2676,6 +2676,19 @@ function accumulateResultPayload(state, bytes)
     state.has = true;
 }
 
+/// Sample the IO rate like the CPU one: the bytes since the previous sample over its interval, in
+/// bytes/second. `elapsed_ns` is the query clock: the live elapsed time, or the clock of a replayed
+/// stream (see `renderEventStreamText`).
+function sampleIoRate(state, elapsed_ns)
+{
+    const dt = elapsed_ns - state.io_at_ns;
+    if (dt <= 0) return;
+    const instant = (state.io_bytes - state.io_sampled) / dt * 1e9;
+    state.io = state.io ? (state.io * 0.5 + instant * 0.5) : instant;
+    state.io_at_ns = elapsed_ns;
+    state.io_sampled = state.io_bytes;
+}
+
 class QueryProgressElement extends HTMLElement
 {
     constructor()
@@ -2997,16 +3010,9 @@ class QueryProgressElement extends HTMLElement
         this._renderResources();
     }
 
-    /// Sample the IO rate like the CPU one: the bytes since the previous sample over its interval, in bytes/second.
     _sampleIo(r)
     {
-        const elapsed_ns = this._last_elapsed_ns;
-        const dt = elapsed_ns - r.io_at_ns;
-        if (dt <= 0) return;
-        const instant = (r.io_bytes - r.io_sampled) / dt * 1e9;
-        r.io = r.io ? (r.io * 0.5 + instant * 0.5) : instant;
-        r.io_at_ns = elapsed_ns;
-        r.io_sampled = r.io_bytes;
+        sampleIoRate(r, this._last_elapsed_ns);
     }
 
     /// Adopt a tab-owned resource state into the shared progress line on tab activation (see
@@ -10976,8 +10982,9 @@ function plainOutputDropsTotalsAndExtremes(format)
 
 /// Dispatch a single parsed SSE event (a packet of a framing `EventStream` response) to the result
 /// element. `options.onStop` is called when the result element asks to stop (e.g. a row limit was
-/// reached); `options.resourceMeter` receives profile-event batches and `options.payloadMeter`
-/// receives decoded result-payload byte counts for the live meters;
+/// reached); `options.resourceMeter` receives profile-event batches (on replay, with the replay clock
+/// in nanoseconds as the second argument) and `options.payloadMeter` receives decoded result-payload
+/// byte counts for the live meters;
 /// `options.onBytes`, if given (a non-default output format under the base64 wire, see
 /// `makeVerbatimPayloadSink`), receives the base64-decoded payload bytes; `options.onException` is
 /// called when an `exception` packet arrives (the query failed even if the HTTP status was already
@@ -11126,8 +11133,9 @@ function makeEventStreamHandler(targetResultEl, options = {})
                 /// tab (live, and on replay of a saved stream). A replayed stream is timestamped
                 /// from the packets themselves (`replayTimeSeconds`), so the restored rates and
                 /// sparklines keep the timing of the original run.
-                targetResultEl.updateMetrics(events, options.replay ? replayTimeSeconds(events) : undefined);
-                if (options.resourceMeter) options.resourceMeter(events);
+                const replay_time = options.replay ? replayTimeSeconds(events) : undefined;
+                targetResultEl.updateMetrics(events, replay_time);
+                if (options.resourceMeter) options.resourceMeter(events, replay_time === undefined ? undefined : replay_time * 1e9);
             }
         }
         else if (name === 'exception')
@@ -11179,7 +11187,9 @@ function dispatchEventStreamBlock(block, handleEvent)
 /// packets are accumulated into the CELL-OWNED resource state through the same
 /// `accumulateResourceEvents` path the live `readEventStream` uses, so a framed result reopened
 /// after a reload / Back / Forward - where `clearCell` dropped that state - gets its shared
-/// CPU/RAM/peak-RAM line back. The state is only rebuilt here; the shared progress line is
+/// CPU/RAM/peak-RAM line back. The IO rate is sampled on every replayed batch from the replay clock
+/// (`replayTimeSeconds`), offset by the state's last sample time so that the next statement of the
+/// run continues the clock of the previous one. The state is only rebuilt here; the shared progress line is
 /// repainted from it by `syncActiveTabChrome` (which runs after the result is materialized),
 /// exactly as for a cell whose query streamed in the background. As live, it is one aggregate per
 /// run: every replayed statement of the cell accumulates into the same state.
@@ -11190,12 +11200,17 @@ function renderEventStreamText(text, targetResultEl, rawText, base64, format, ce
     /// through the verbatim sink (incremental raw text, or an image collected until the end).
     const verbatim = (base64 && !isDefaultFormat(format)) ? makeVerbatimPayloadSink(targetResultEl, format) : null;
     if (cell && !cell.resources) cell.resources = freshResourceState();
+    const io_clock_base_ns = cell ? cell.resources.io_at_ns : 0;
     const handleEvent = makeEventStreamHandler(targetResultEl, {
         rawText,
         format,
         base64,
         replay: true,
-        resourceMeter: cell ? (events) => accumulateResourceEvents(cell.resources, events) : undefined,
+        resourceMeter: cell ? (events, replay_ns) =>
+        {
+            accumulateResourceEvents(cell.resources, events);
+            sampleIoRate(cell.resources, io_clock_base_ns + replay_ns);
+        } : undefined,
         payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,
         onBytes: verbatim ? (bytes) => verbatim.onBytes(bytes) : undefined,
     });
