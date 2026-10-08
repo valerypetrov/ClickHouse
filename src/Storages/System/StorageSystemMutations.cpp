@@ -56,6 +56,8 @@ ColumnsDescription StorageSystemMutations::getColumnsDescription()
             "The estimated fraction of the mutation's work that is finished, from 0 to 1: the on-disk size of the remaining parts, including the live fraction of the parts currently "
             "being rewritten (rows of `system.merges` with `is_mutation` = 1), relative to the byte weight the remaining work had when the mutation was submitted. Finished parts keep "
             "that pre-mutation weight whatever size the rewrite left behind, so a `DELETE WHERE 1` over two equal parts reads about 0.5 once the first part is done. "
+            "Pending parts that a regular merge or an earlier mutation rewrites count at their new size from then on, so a merge of pending parts before the mutation "
+            "has rewritten anything leaves `progress` at 0. "
             "The weight is kept in memory only: after a server restart, or on a replica that first sizes the mutation later, it is re-measured from what remains and `progress` "
             "restarts as a lower bound for the leftover portion. A regular merge can fold a part inserted after the mutation into its scope; the denominator grows along with such "
             "discovered work, and a merge can also retire pending parts at any moment, which makes `progress` jump forward. "
