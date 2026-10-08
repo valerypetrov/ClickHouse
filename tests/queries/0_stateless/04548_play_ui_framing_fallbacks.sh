@@ -350,12 +350,12 @@ echo "$page" | grep -q -F 'const is_table = !rendered_image && isDefaultFormat(f
 # otherwise a multi-second query restores with the rates and the sparkline history of the replay
 # speed. Live streaming keeps the wall clock (`updateMetrics` called with no packet time).
 echo "$page" | grep -q -F "const t = Date.parse(String(e.current_time ?? '').replace(' ', 'T') + 'Z');" && echo 'replay clock comes from the packets: OK'
-echo "$page" | grep -q -F 'targetResultEl.updateMetrics(events, options.replay ? replayTimeSeconds(events) : undefined);' && echo 'replay time reaches the metrics model: OK'
+echo "$page" | grep -A1 -F 'const replay_time = options.replay ? replayTimeSeconds(events) : undefined;' | grep -q -F 'targetResultEl.updateMetrics(events, replay_time);' && echo 'replay time reaches the metrics model: OK'
 # A restored framed result rebuilds the cell-owned resource state from the replayed `profile_events`
 # through the same `accumulateResourceEvents` path the live reader uses, so the shared CPU/RAM/peak-RAM
 # line reappears after a reload / Back / Forward (`clearCell` dropped that state); `syncActiveTabChrome`
 # repaints it. Every replay site passes its cell.
-echo "$page" | grep -q -F 'resourceMeter: cell ? (events) => accumulateResourceEvents(cell.resources, events) : undefined,' && echo 'replay rebuilds the resource state: OK'
+echo "$page" | grep -A2 -F 'resourceMeter: cell ? (events, replay_ns) =>' | grep -q -F 'accumulateResourceEvents(cell.resources, events);' && echo 'replay rebuilds the resource state: OK'
 [ "$(echo "$page" | grep -c -E 'renderEventStreamText\(.*, format, cell, (false|!!)')" -eq 3 ] && echo 'every replay site passes its cell: OK'
 # The live reader deliberately never renders an image collected from a truncated stream
 # (`verbatim.finish(truncated)` skips it), so a saved truncated `FORMAT PNG` snapshot must not
