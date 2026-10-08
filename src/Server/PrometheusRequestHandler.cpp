@@ -473,7 +473,7 @@ public:
             return false;
 
         /// Parameters of other Prometheus-compatible servers; `nocache` and `partial_response=false` are mapped in addSettingsFromParams.
-        static const NameSet ignored_param_names{"nocache", "trace", "round_digits", "partial_response"};
+        static const NameSet ignored_param_names{"nocache", "trace", "round_digits", "partial_response", "dedup"};
         if (ignored_param_names.contains(name) || unsupported_param_names.contains(name))
             return false;
 
@@ -522,7 +522,9 @@ public:
                 if (params->has(name))
                     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The '{}' parameter is not supported", name);
 
-            /// Partial responses are not implemented; `partial_response=false` asks only for the default.
+            /// Deduplication and partial responses are not implemented; `dedup=false` and `partial_response=false` ask only for the default.
+            if (params->getParsed<bool>("dedup", false))
+                throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The 'dedup=true' parameter is not supported");
             if (params->getParsed<bool>("partial_response", false))
                 throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The 'partial_response=true' parameter is not supported");
 
@@ -674,7 +676,7 @@ public:
 
 private:
     /// These parameters change which series a client gets, so they are rejected and never ignored.
-    static inline const NameSet unsupported_param_names{"extra_label", "extra_filters", "extra_filters[]", "dedup"};
+    static inline const NameSet unsupported_param_names{"extra_label", "extra_filters", "extra_filters[]"};
 
     /// Handles the format_query endpoint: parses the PromQL expression given in the 'query' parameter
     /// and writes it back serialized from the parsed tree, i.e. with the whitespace normalized,
