@@ -361,7 +361,8 @@ namespace
         bool check_right_if_left_not_empty = group_left && !is_join_group_unique_on_side[1];
 
         /// For group_left the left join groups are pushed down into the right side.
-        bool push_down_left_join_groups = group_left && right_is_group_preserving;
+        /// `on()` is skipped: its join group is always the zero group, so nothing could be filtered out.
+        bool push_down_left_join_groups = group_left && right_is_group_preserving && !(operator_node->on && operator_node->labels.empty());
 
         /// Steps 1-2:
         /// new_left / new_right:

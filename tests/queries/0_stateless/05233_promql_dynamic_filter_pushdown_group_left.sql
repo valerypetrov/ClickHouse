@@ -50,6 +50,9 @@ SELECT * FROM prometheusQuery('t_promql_dfp', 'label_replace(requests, "dc2", "$
 SELECT '-- group_left with vector(scalar(...)) on right side';
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on () group_left vector(scalar(sum(requests)))', 110) ORDER BY tags;
 
+SELECT '-- group_left with on () is not pushed down, its join group is always the zero group';
+SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on () group_left target_info{dc="a"}', 110) ORDER BY tags;
+
 SELECT '-- group_left with on(__name__) and rate';
 INSERT INTO t_promql_dfp (metric_name, tags, samples) VALUES
     ('rate_target', map('dc', 'a', 'env', 'prod'), [(toDateTime64(100, 3), 2), (toDateTime64(110, 3), 4)]);
