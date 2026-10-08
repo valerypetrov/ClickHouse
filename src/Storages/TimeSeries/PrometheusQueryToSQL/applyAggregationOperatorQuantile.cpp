@@ -90,41 +90,44 @@ namespace
         }
     }
 
-    /// Prometheus orders NaN before every other value, so the quantile counts NaN as -Inf
-    /// and the result is NaN if the rank falls on a NaN.
+    /// Calculates the quantile at each step like Prometheus: NaN sorts before every other value,
+    /// and between two samples the result is `lower * (1 - weight) + upper * weight`.
     ASTPtr makeQuantileForEach(const ASTPtr & phi)
     {
-        auto x = [] { return make_intrusive<ASTIdentifier>("x"); };
-        auto values = [] { return make_intrusive<ASTIdentifier>(ColumnNames::Values); };
+        auto id = [](const String & name) -> ASTPtr { return make_intrusive<ASTIdentifier>(name); };
 
-        ASTPtr quantiles = addParametersToAggregateFunction(
-            makeASTFunction("quantileExactInclusiveForEach",
-                makeASTFunction("arrayMap",
-                    makeASTLambda({"x"},
-                        makeASTFunction("if",
-                            makeASTFunction("isNaN", x()),
-                            make_intrusive<ASTLiteral>(-std::numeric_limits<Float64>::infinity()),
-                            x())),
-                    values())),
-            phi->clone());
+        /// arrayMap(s -> arrayRotateRight(arraySort(s), arrayCount(x -> isNaN(x), s)), groupArrayForEach(values))
+        ASTPtr sorted_values = makeASTFunction("arrayMap",
+            makeASTLambda({"s"},
+                makeASTFunction("arrayRotateRight",
+                    makeASTFunction("arraySort", id("s")),
+                    makeASTFunction("arrayCount", makeASTLambda({"x"}, makeASTFunction("isNaN", id("x"))), id("s")))),
+            makeASTFunction("groupArrayForEach", id(ColumnNames::Values)));
 
-        ASTPtr sample_counts = makeASTFunction("countForEach", values());
-        ASTPtr nan_counts = makeASTFunction("sumForEach",
-            makeASTFunction("arrayMap", makeASTLambda({"x"}, makeASTFunction("isNaN", x())), values()));
-
-        /// arrayMap((value, sample_count, nan_count) -> if(floor(phi * (sample_count - 1)) < nan_count, nan, value), ...)
-        ASTPtr rank = makeASTFunction("floor",
-            makeASTFunction("multiply",
+        /// rank = phi * (length(t) - 1), lower = floor(rank), weight = rank - lower
+        auto rank = [&]
+        {
+            return makeASTFunction("multiply",
                 phi->clone(),
-                makeASTFunction("minus", make_intrusive<ASTIdentifier>("sample_count"), make_intrusive<ASTLiteral>(1u))));
+                makeASTFunction("minus", makeASTFunction("length", id("t")), make_intrusive<ASTLiteral>(1u)));
+        };
+        auto lower = [&] { return makeASTFunction("floor", rank()); };
+        auto weight = [&] { return makeASTFunction("minus", rank(), lower()); };
+        auto element = [&](UInt64 offset)
+        {
+            ASTPtr index = makeASTFunction("plus", makeASTFunction("toUInt64", lower()), make_intrusive<ASTLiteral>(offset));
+            return makeASTFunction("arrayElement", id("t"), makeASTFunction("least", std::move(index), makeASTFunction("length", id("t"))));
+        };
+
+        /// arrayMap(t -> if(empty(t), NULL, t[lower + 1] * (1 - weight) + t[least(lower + 2, length(t))] * weight), sorted_values)
+        ASTPtr value = makeASTFunction("plus",
+            makeASTFunction("multiply", element(1), makeASTFunction("minus", make_intrusive<ASTLiteral>(1.), weight())),
+            makeASTFunction("multiply", element(2), weight()));
 
         return makeASTFunction("arrayMap",
-            makeASTLambda({"value", "sample_count", "nan_count"},
-                makeASTFunction("if",
-                    makeASTFunction("less", std::move(rank), make_intrusive<ASTIdentifier>("nan_count")),
-                    make_intrusive<ASTLiteral>(std::numeric_limits<Float64>::quiet_NaN()),
-                    make_intrusive<ASTIdentifier>("value"))),
-            std::move(quantiles), std::move(sample_counts), std::move(nan_counts));
+            makeASTLambda({"t"},
+                makeASTFunction("if", makeASTFunction("empty", id("t")), make_intrusive<ASTLiteral>(Field{} /* NULL */), std::move(value))),
+            std::move(sorted_values));
     }
 }
 

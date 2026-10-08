@@ -1,7 +1,8 @@
 -- Tags: no-fasttest
 -- Tag no-fasttest: PromQL needs ANTLR4, which is disabled in the fast-test build.
 
--- The PromQL `quantile` aggregation keeps NaN samples and orders them before every real value, like Prometheus.
+-- The PromQL `quantile` aggregation keeps NaN samples and orders them before every real value, like Prometheus,
+-- and interpolates between two samples as `lower * (1 - weight) + upper * weight`, like Prometheus.
 
 SET session_timezone = 'UTC';
 SET allow_experimental_time_series_table = 1;
@@ -30,7 +31,9 @@ INSERT INTO prometheus (metric_name, tags, samples) VALUES
     ('nan_inf', map('point', 'a'), [(toDateTime64(60, 3), nan)]),
     ('nan_inf', map('point', 'b'), [(toDateTime64(60, 3), -inf)]),
     ('nan_inf', map('point', 'c'), [(toDateTime64(60, 3), 0)]),
-    ('nan_inf', map('point', 'd'), [(toDateTime64(60, 3), 1)]);
+    ('nan_inf', map('point', 'd'), [(toDateTime64(60, 3), 1)]),
+    ('neg_inf', map('point', 'a'), [(toDateTime64(60, 3), -inf)]),
+    ('neg_inf', map('point', 'b'), [(toDateTime64(60, 3), 0)]);
 
 SELECT '-- quantile without(point)(0, data)';
 SELECT tags, value FROM prometheusQuery('prometheus', 'quantile without(point)(0, data)', 60) ORDER BY tags;
@@ -51,6 +54,12 @@ SELECT tags, value FROM prometheusQuery('prometheus', 'quantile without(point)(s
 -- A NaN shifts the rank also next to a real -Inf: {NaN, -Inf, 0, 1} gives 0.4 as in Prometheus, without the NaN it would be 0.6.
 SELECT '-- quantile(0.8, nan_inf)';
 SELECT tags, value FROM prometheusQuery('prometheus', 'quantile(0.8, nan_inf)', 60) ORDER BY tags;
+
+-- Between a real -Inf and 0 the result is -Inf, as in Prometheus, also when a NaN shifts the rank there.
+SELECT '-- quantile(0.6, nan_inf)';
+SELECT tags, value FROM prometheusQuery('prometheus', 'quantile(0.6, nan_inf)', 60) ORDER BY tags;
+SELECT '-- quantile(0.5, neg_inf)';
+SELECT tags, value FROM prometheusQuery('prometheus', 'quantile(0.5, neg_inf)', 60) ORDER BY tags;
 
 SELECT '-- quantile(0.5, series), range';
 SELECT * FROM prometheusQueryRange('prometheus', 'quantile(0.5, series)', 100, 120, 10) ORDER BY tags;
