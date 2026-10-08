@@ -110,4 +110,4 @@ LATERAL materialized view, replayed objects: 1
 --- a plain dump replays under every carrier-gate constraint ---
 plain dump, join-key/minmax-JSON/suspicious-index/url-wildcard gates emitted: 0
 OK: constrained replay succeeded
-constrained replay tables present: 22
+constrained replay tables present: 23

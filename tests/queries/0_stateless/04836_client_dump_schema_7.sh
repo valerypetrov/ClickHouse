@@ -369,6 +369,7 @@ CREATE VIEW ${CONSTRAINT_DB}.vj AS SELECT a.x FROM ${CONSTRAINT_DB}.mt AS a JOIN
 CREATE MATERIALIZED VIEW ${CONSTRAINT_DB}.mv_join ENGINE = Memory AS SELECT a.x AS x FROM ${CONSTRAINT_DB}.mt AS a JOIN ${CONSTRAINT_DB}.mem AS b ON a.x = b.x;
 CREATE TABLE ${CONSTRAINT_DB}.dk (k Dynamic, v UInt64) ENGINE = MergeTree ORDER BY tuple();
 CREATE VIEW ${CONSTRAINT_DB}.vdk AS SELECT a.v FROM ${CONSTRAINT_DB}.dk AS a JOIN ${CONSTRAINT_DB}.dk AS b ON a.k = b.k;
+CREATE MATERIALIZED VIEW ${CONSTRAINT_DB}.mvdk ENGINE = Memory AS SELECT a.v AS v FROM ${CONSTRAINT_DB}.dk AS a JOIN ${CONSTRAINT_DB}.dk AS b ON a.k = b.k;
 CREATE TABLE ${CONSTRAINT_DB}.jm (j JSON, INDEX i j TYPE minmax) ENGINE = MergeTree ORDER BY tuple() SETTINGS allow_minmax_index_for_json = 1;
 CREATE VIEW ${CONSTRAINT_DB}.u_plain AS SELECT * FROM url('http://127.0.0.1:1/data.csv', CSV, 'x UInt8');
 SET allow_deprecated_error_prone_window_functions = 1, enable_funnel_functions = 1, allow_url_wildcard_from_index_pages = 1, enable_nullable_tuple_type = 1;
