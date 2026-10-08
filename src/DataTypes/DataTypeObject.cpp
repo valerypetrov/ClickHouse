@@ -350,7 +350,8 @@ DataTypePtr DataTypeObject::doCloneWithChildren(const DataTypes & new_children) 
         new_typed_paths.emplace(sorted_typed_paths[i].first, new_children[i]);
 
     return std::make_shared<DataTypeObject>(
-        schema_format, std::move(new_typed_paths), paths_to_skip, path_regexps_to_skip, max_dynamic_paths, max_dynamic_types);
+        schema_format, std::move(new_typed_paths), paths_to_skip, path_regexps_to_skip, max_dynamic_paths, max_dynamic_types,
+        shared_data_path_regexps);
 }
 
 namespace
