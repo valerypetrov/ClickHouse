@@ -448,7 +448,9 @@ protected:
         /// Visit the populated buckets in ascending index order, feeding each into the sliding window when its
         /// grid point's window reaches it. When most bucket slots are populated (`use_range_scan`) looking each
         /// index up in the hash map is cheaper than sorting; otherwise collect the populated buckets and sort them once.
-        const bool use_range_scan = (buckets.size() != 0)
+        /// A map with fewer cells than `bucket_count` wraps the keys into clusters, and looking up an absent key walks one.
+        const size_t num_cells = buckets.getBufferSizeInBytes() / sizeof(typename std::remove_cvref_t<decltype(buckets)>::cell_type);
+        const bool use_range_scan = (buckets.size() != 0) && num_cells >= bucket_count
             && (static_cast<double>(buckets.size()) >= static_cast<double>(bucket_count) * BUCKET_DENSITY_TO_ENABLE_RANGE_SCAN);
         if (use_range_scan)
         {
