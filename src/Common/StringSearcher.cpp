@@ -2,6 +2,8 @@
 #include <Common/UTF8Helpers.h>
 #include <Poco/Unicode.h>
 
+#include <array>
+
 namespace DB
 {
 
@@ -178,6 +180,36 @@ compareTrivialUTF8(const UInt8 * haystack_pos, const UInt8 * haystack_end, const
 }
 
 } // anonymous namespace
+
+namespace UTF8
+{
+
+bool isASCIIReachableByCaseFolding(char c)
+{
+    /// Derived from `utf8CaseFold` rather than hardcoded, so it cannot drift from the folding it describes.
+    static const std::array<bool, 128> reachable = []
+    {
+        std::array<bool, 128> result{};
+        for (int code_point = 0x80; code_point <= 0x10FFFF; ++code_point)
+        {
+            const int folded = utf8CaseFold(code_point);
+            if (folded >= 0x80)
+                continue;
+
+            result[folded] = true;
+            /// The needle character is folded too, so the other case is equally unsafe.
+            const int other_case = Poco::Unicode::toUpper(folded);
+            if (other_case < 0x80)
+                result[other_case] = true;
+        }
+        return result;
+    }();
+
+    const auto index = static_cast<unsigned char>(c);
+    return index < 0x80 && reachable[index];
+}
+
+}
 
 namespace TargetSpecific::Default
 {

@@ -132,8 +132,8 @@ size_t computeBytesBeforeWidth(const UInt8 * data, size_t size, size_t prefix, s
   */
 size_t computeBytesBeforeCodePoint(const UInt8 * data, size_t size, size_t limit) noexcept;
 
-/// True if `utf8CaseFold`, the rule of case-insensitive UTF-8 search, maps a non-ASCII code point onto `c` or its
-/// other case. A caller comparing bytes cannot see such a match. Today no character qualifies.
+/// True if `utf8CaseFold` maps a non-ASCII code point onto `c` or its other case, so a byte compare misses the match.
+/// Defined in StringSearcher.cpp, which the wasm parser does not build. Today no character qualifies.
 bool isASCIIReachableByCaseFolding(char c);
 
 }
