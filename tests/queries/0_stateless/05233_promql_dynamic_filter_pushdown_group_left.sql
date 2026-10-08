@@ -53,6 +53,11 @@ SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on () group_left vecto
 SELECT '-- group_left with on () is not pushed down, its join group is always the zero group';
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on () group_left target_info{dc="a"}', 110) ORDER BY tags;
 
+SELECT '-- explain plan verifies that on () skips the extra read of the right selector';
+SELECT
+    (SELECT countIf(explain LIKE '%ReadFrom%') FROM (EXPLAIN PLAN SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on () group_left target_info{dc="a"}', 110)))
+    < (SELECT countIf(explain LIKE '%ReadFrom%') FROM (EXPLAIN PLAN SELECT * FROM prometheusQuery('t_promql_dfp', 'requests * on (dc) group_left target_info{dc="a"}', 110)));
+
 SELECT '-- group_left with on(__name__) and rate';
 INSERT INTO t_promql_dfp (metric_name, tags, samples) VALUES
     ('rate_target', map('dc', 'a', 'env', 'prod'), [(toDateTime64(100, 3), 2), (toDateTime64(110, 3), 4)]);
