@@ -11,6 +11,7 @@
 #include <Common/PODArray.h>
 #include <Common/SipHash.h>
 #include <Common/UnorderedSetWithMemoryTracking.h>
+#include <Common/checkStackSize.h>
 #include <Common/logger_useful.h>
 #include <Common/re2.h>
 
@@ -308,6 +309,9 @@ MutableColumnPtr ColumnObject::cloneResized(size_t size) const
 
 Field ColumnObject::operator[](size_t n) const
 {
+    /// Nesting is part of the value rather than of the query text, so no parser limit bounds it.
+    checkStackSize();
+
     Object object;
 
     for (const auto & [path, column] : typed_paths)
