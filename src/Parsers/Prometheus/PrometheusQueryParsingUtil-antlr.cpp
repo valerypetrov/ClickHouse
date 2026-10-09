@@ -916,7 +916,8 @@ namespace
         ResultType getFunctionResultType(std::string_view function_name)
         {
             if (function_name == "scalar" || function_name == "time" || function_name == "pi"
-                || function_name == "min_of" || function_name == "max_of")
+                || function_name == "min_of" || function_name == "max_of"
+                || function_name == "start" || function_name == "end" || function_name == "range" || function_name == "step")
                 return ResultType::SCALAR;
             else
                 return ResultType::INSTANT_VECTOR;

@@ -2065,6 +2065,16 @@ PrometheusQueryTree(INSTANT_VECTOR):
     expectRoundTrip("end() - start()", "end() - start()");
     expectRoundTrip("x @ end() - start ()", "x @ end() - start()");
 
+    /// `start()`, `end()`, `range()` and `step()` return scalars, as in Prometheus.
+    EXPECT_EQ(parse("start()"), R"(
+start()
+
+PrometheusQueryTree(SCALAR):
+    Function(start)
+)");
+    for (const auto * const query : {"end()", "range()", "step()", "end() - start()"})
+        EXPECT_NE(parse(query).find("PrometheusQueryTree(SCALAR)"), String::npos) << query;
+
     /// A name with ':' cannot be called.
     PrometheusQueryTree query_tree;
     String error_message;
