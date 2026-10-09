@@ -220,6 +220,13 @@ echo "CAST materialized view, low-cardinality gate emitted: $(grep -c '^SET allo
 echo "Nullable(Tuple) CAST materialized view, nullable-tuple gate emitted: $(grep -c '^SET enable_nullable_tuple_type = 1;' "$DUMP_FILE")"
 echo "correlated subquery materialized view, correlated-subquery gate emitted: $(grep -cE '^SET (allow_experimental_correlated_subqueries|allow_correlated_subqueries) = 1;' "$DUMP_FILE")"
 replay_local 'function materialized views' '%'
+# The source probe runs the scalar subquery; its JOIN on Dynamic keys must not read as a correlated subquery.
+make_dump "
+CREATE TABLE ${DB}.dk (k Dynamic, v UInt64) ENGINE = MergeTree ORDER BY tuple();
+CREATE MATERIALIZED VIEW ${DB}.mv_scalar_dk ENGINE = Memory AS SELECT v, (SELECT count() FROM ${DB}.dk AS a JOIN ${DB}.dk AS b ON a.k = b.k) AS c FROM ${DB}.dk;
+"
+echo "scalar subquery joined on Dynamic keys, correlated-subquery gate emitted: $(grep -cE '^SET (allow_experimental_correlated_subqueries|allow_correlated_subqueries) = 1;' "$DUMP_FILE")"
+replay_local 'scalar subquery joined on Dynamic keys' 'mv%'
 # A plain view keeps its columns, so replay never analyzes its SELECT.
 make_dump "
 CREATE TABLE ${DB}.mt (x Int64, s String, d Dynamic) ENGINE = MergeTree ORDER BY x;

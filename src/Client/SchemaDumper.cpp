@@ -3965,13 +3965,16 @@ void dumpDatabaseSchema(
         connection, timeouts, client_info, "SELECT name FROM system.settings WHERE NOT is_obsolete", context->getSettingsRef());
     std::set<String> settings_known_to_server(server_setting_names.begin(), server_setting_names.end());
 
-    /// `EXPLAIN QUERY TREE` runs the analyzer only, so it reads nothing and creates nothing on the source. The settings go
+    /// `EXPLAIN QUERY TREE` runs the analyzer and the scalar subqueries only, so it creates nothing on the source. The settings go
     /// in the query text, because `LocalConnection` drops the settings argument.
     const AnalyzesOnSource analyzes_on_source = [&](const String & select_query, const SettingsChanges & changes)
     {
         String query = "EXPLAIN QUERY TREE " + select_query + " SETTINGS ";
         for (size_t i = 0; i < changes.size(); ++i)
             query += (i ? ", " : "") + changes[i].name + (changes[i].value.safeGet<bool>() ? " = 1" : " = 0");
+        /// A scalar subquery runs here, and its JOIN on `Dynamic` keys, which CREATE never plans, must not fail the probe.
+        if (settings_known_to_server.contains("allow_dynamic_type_in_join_keys"))
+            query += ", allow_dynamic_type_in_join_keys = 1";
         try
         {
             fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef());
