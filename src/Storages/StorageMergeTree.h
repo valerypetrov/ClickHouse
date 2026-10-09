@@ -190,6 +190,11 @@ private:
     const bool support_transaction;
 
     void loadMutations();
+    /// Reads a `mutation_*.txt` entry, reporting an entry that the owner of a shared directory removed meanwhile.
+    MergeTreeMutationEntry loadMutationEntry(const DiskPtr & disk, const String & file_name) const;
+    /// Removes the mutation entries and the deduplication log, which `dropAllData` leaves alone when the table
+    /// occupies the whole disk (`table_disk`).
+    void removeOwnFilesInDiskRootOnDrop(const DiskPtr & disk) override;
 
     /// Load and initialize deduplication logs. Even if deduplication setting
     /// equals zero creates object with deduplication window equals zero.
@@ -394,6 +399,10 @@ private:
     };
     void startBackgroundWorkers(StartedBackgroundWorkers * started = nullptr);
     void finishBackgroundWorkers(const StartedBackgroundWorkers & started) noexcept;
+    /// Stops every background task of the table: the periodic refresh tasks, the part loaders, the cleanup
+    /// thread and all assignees. Idempotent. Used after `shutdown_called` is set, both by `shutdown` and by a
+    /// `startup` or an `ALTER` that armed some tasks and then observed a concurrent `shutdown`.
+    void stopAllBackgroundTasks();
     void enableBackgroundWorkers() noexcept;
     void disableBackgroundWorkers() noexcept;
     /// Schedules the merge/mutate and move assignees, the cleanup thread, and the outdated and
