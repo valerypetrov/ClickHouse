@@ -2572,6 +2572,7 @@ struct ReplayGateNeeds
     bool paimon_table = false;
     bool delta_lake_table = false;
     bool archive_path = false; /// a table engine argument that names a file inside an archive (`a.tar :: f.csv`)
+    bool nested_column = false; /// a column of type `Nested`, which CREATE flattens unless `flatten_nested = 0`
 
     /// Carriers of the shared gates, `parse_failed` keeps all of them.
     bool funnel_functions = false;
@@ -2977,7 +2978,8 @@ ReplayGateNeeds collectReplayGateNeeds(
                     .materialized_postgresql_table = true, .time_series_table = true,
                     .kafka_keeper_offsets = true, .nullable_tuple_type = true, .unique_key = true,
                     .data_lake_catalog_database = true, .ytsaurus_table = true, .paimon_table = true,
-                    .delta_lake_table = true, .archive_path = true, .codec_gates = {}, .data_lake_catalog_gates = {}};
+                    .delta_lake_table = true, .archive_path = true, .nested_column = true,
+                    .codec_gates = {}, .data_lake_catalog_gates = {}};
         }
 
         const auto * create = create_ast->as<ASTCreateQuery>();
@@ -3212,6 +3214,13 @@ ReplayGateNeeds collectReplayGateNeeds(
             needs.nullable_tuple_type |= type_needs.nullable_tuple;
         }
 
+        /// `getColumnsDescription` flattens a `Nested` column on CREATE, while the source kept it.
+        if (create->columns_list && create->columns_list->columns)
+            for (const auto & child : create->columns_list->columns->children)
+                if (const auto * column = child->as<ASTColumnDeclaration>(); column && column->getType())
+                    if (const auto * type = column->getType()->as<ASTDataType>(); type && equalsCaseInsensitive(type->name, "Nested"))
+                        needs.nested_column = true;
+
         /// `allow_statistics` is read for every column STATISTICS (`getColumnsDescription`).
         if (create->columns_list && create->columns_list->columns)
             for (const auto & child : create->columns_list->columns->children)
@@ -3363,6 +3372,8 @@ String replaySettingsPrelude(
         {"database_replicated_allow_only_replicated_engine", "0"},
         /// Without it a File table reads the archive path as a plain file name, and an S3 table fails to create.
         {"allow_archive_path_syntax", "1"},
+        /// Value 0 keeps a `Nested` column as the source stored it, instead of `n.a Array(...)` columns.
+        {"flatten_nested", "0"},
     };
     /// Emit only dump-specific gates known by the source server and required by these statements.
     const ReplayGateNeeds needs = collectReplayGateNeeds(create_queries, context, analyzes_on_source);
@@ -3390,6 +3401,8 @@ String replaySettingsPrelude(
             return needs.nullable_tuple_type;
         if (name == "allow_archive_path_syntax")
             return needs.archive_path;
+        if (name == "flatten_nested")
+            return needs.nested_column;
         return false;
     };
 

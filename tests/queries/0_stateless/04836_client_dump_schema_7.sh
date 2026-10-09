@@ -377,6 +377,16 @@ rm -rf "$REPLAY_PATH"
 $CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --allow_archive_path_syntax=0 --multiquery --queries-file "${DUMP_FILE}.read" 2>"$ERR_FILE" \
     && echo 'OK: archive paths replayed' || echo "FAIL: archive paths replay rejected: $(cat "$ERR_FILE")"
 rm -rf "$REPLAY_PATH" "$ARCHIVE_DIR" "${DUMP_FILE}.read"
+# CREATE flattens a Nested column unless flatten_nested = 0, so the replay keeps it only through the dump's SET.
+make_dump "
+SET flatten_nested = 0;
+CREATE TABLE ${DB}.nested (k UInt8, n Nested(a UInt8, b String)) ENGINE = MergeTree ORDER BY k;
+"
+echo "Nested column, flatten_nested = 0 emitted: $(grep -c '^SET flatten_nested = 0;' "$DUMP_FILE")"
+rm -rf "$REPLAY_PATH"
+$CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --multiquery --queries-file "$DUMP_FILE" 2>"$ERR_FILE" || echo "FAIL: Nested column replay rejected: $(cat "$ERR_FILE")"
+echo "Nested column, replayed column types: $($CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --query "SELECT groupArray(type) FROM (SELECT type FROM system.columns WHERE database = '${DB}' AND table = 'nested' ORDER BY position)")"
+rm -rf "$REPLAY_PATH"
 
 echo '--- a plain dump replays under every carrier-gate constraint ---'
 CONSTRAINT_DB="${DB}_sweep"
