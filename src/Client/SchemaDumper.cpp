@@ -2596,6 +2596,7 @@ struct ReplayGateNeeds
     bool queue_hive_partitioning = false;
     bool url_wildcard = false;
     bool statistics = false;
+    bool xgboost = false;
     std::set<String> codec_gates; /// `enable_<family>_codec` of the codecs the statements name
     std::set<String> data_lake_catalog_gates; /// gates of the known `catalog_type`s; `data_lake_catalog_database` keeps all
 };
@@ -3196,6 +3197,7 @@ ReplayGateNeeds collectReplayGateNeeds(
             || hasToken(names, "neighbor");
         needs.hyperscan_functions |= hasToken(names, "multimatch", true) || hasToken(names, "multifuzzymatch", true);
         needs.time_series_aggregate_functions |= hasTimeSeriesFunction(names);
+        needs.xgboost |= hasToken(names, "predictxgboost");
 
         /// Type gates come from `validateDataType` itself. `InterpreterCreateQuery` validates the stored columns except a
         /// view's; a materialized view's inner table validates them on its own CREATE.
@@ -3241,6 +3243,8 @@ ReplayGateNeeds collectReplayGateNeeds(
 
         if (create->dictionary && create->dictionary->source && equalsCaseInsensitive(create->dictionary->source->name, "ytsaurus"))
             needs.ytsaurus_dictionary_source = true;
+        if (create->dictionary && create->dictionary->layout && equalsCaseInsensitive(create->dictionary->layout->layout_type, "xgboost"))
+            needs.xgboost = true;
 
         const IAST * main_engine = create->storage ? create->storage->engine : nullptr;
         forEachNode(*create_ast, [&](const IAST & node)
@@ -3475,6 +3479,7 @@ String replaySettingsPrelude(
         {"allow_experimental_ytsaurus_table_engine", &ReplayGateNeeds::ytsaurus_table},
         {"allow_experimental_paimon_storage_engine", &ReplayGateNeeds::paimon_table},
         {"allow_statistics", &ReplayGateNeeds::statistics},
+        {"enable_xgboost", &ReplayGateNeeds::xgboost},
     };
     auto shared_needed = [&needs](const String & name)
     {

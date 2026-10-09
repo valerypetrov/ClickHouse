@@ -116,6 +116,12 @@ File table over an archive, rows	2
 OK: archive paths replayed
 Nested column, flatten_nested = 0 emitted: 1
 Nested column, replayed column types: ['UInt8','Nested(a UInt8, b String)']
+XGBOOST dictionary, xgboost gate emitted: 1
+OK: XGBOOST dictionary replayed
+XGBOOST dictionary, replayed objects: 2
+predictXGBoost materialized view, xgboost gate emitted: 1
+OK: predictXGBoost materialized view replayed
+predictXGBoost materialized view, replayed objects: 2
 --- a plain dump replays under every carrier-gate constraint ---
 plain dump, join-key/minmax-JSON/suspicious-index/url-wildcard gates emitted: 0
 OK: constrained replay succeeded

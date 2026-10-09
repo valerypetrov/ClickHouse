@@ -387,6 +387,30 @@ rm -rf "$REPLAY_PATH"
 $CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --multiquery --queries-file "$DUMP_FILE" 2>"$ERR_FILE" || echo "FAIL: Nested column replay rejected: $(cat "$ERR_FILE")"
 echo "Nested column, replayed column types: $($CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --query "SELECT groupArray(type) FROM (SELECT type FROM system.columns WHERE database = '${DB}' AND table = 'nested' ORDER BY position)")"
 rm -rf "$REPLAY_PATH"
+# CREATE refuses an XGBOOST dictionary, and the analysis of predictXGBoost, unless enable_xgboost = 1.
+make_dump "
+SET enable_xgboost = 1;
+CREATE TABLE ${DB}.xgb_train (x Float64, y Float64) ENGINE = MergeTree ORDER BY tuple();
+CREATE DICTIONARY ${DB}.xgb_model (x Float64, y Float64) PRIMARY KEY x SOURCE(CLICKHOUSE(DB '${DB}' TABLE 'xgb_train')) LAYOUT(XGBOOST()) LIFETIME(0);
+"
+echo "XGBOOST dictionary, xgboost gate emitted: $(grep -c '^SET enable_xgboost = 1;' "$DUMP_FILE")"
+replay_local 'XGBOOST dictionary' 'xgb%'
+# predictXGBoost needs its dictionary at CREATE, so the model sits in a database the dump leaves out.
+XGB_MODEL="CREATE DATABASE ${DB}_xgb; CREATE TABLE ${DB}_xgb.train (x Float64, y Float64) ENGINE = MergeTree ORDER BY tuple();
+CREATE DICTIONARY ${DB}_xgb.model (x Float64, y Float64) PRIMARY KEY x SOURCE(CLICKHOUSE(DB '${DB}_xgb' TABLE 'train')) LAYOUT(XGBOOST()) LIFETIME(0);"
+make_dump "
+SET enable_xgboost = 1;
+${XGB_MODEL}
+CREATE TABLE ${DB}.xgb_src (x Float64) ENGINE = MergeTree ORDER BY tuple();
+CREATE MATERIALIZED VIEW ${DB}.xgb_mv ENGINE = Memory AS SELECT x, predictXGBoost('${DB}_xgb.model', x) AS p FROM ${DB}.xgb_src;
+"
+echo "predictXGBoost materialized view, xgboost gate emitted: $(grep -c '^SET enable_xgboost = 1;' "$DUMP_FILE")"
+rm -rf "$REPLAY_PATH"
+$CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --enable_xgboost=1 --multiquery --query "${XGB_MODEL}"
+$CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --multiquery --queries-file "$DUMP_FILE" > /dev/null 2>"$ERR_FILE" \
+    && echo 'OK: predictXGBoost materialized view replayed' || echo "FAIL: predictXGBoost materialized view replay rejected: $(cat "$ERR_FILE")"
+echo "predictXGBoost materialized view, replayed objects: $($CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --query "SELECT count() FROM system.tables WHERE database = '${DB}' AND name LIKE 'xgb%' AND name NOT LIKE '.inner%'")"
+rm -rf "$REPLAY_PATH"
 
 echo '--- a plain dump replays under every carrier-gate constraint ---'
 CONSTRAINT_DB="${DB}_sweep"
