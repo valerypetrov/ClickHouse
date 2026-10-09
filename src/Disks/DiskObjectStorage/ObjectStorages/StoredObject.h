@@ -36,6 +36,9 @@ struct StoredObject
     /// Version ID from when the object was read; empty if unversioned or unknown.
     String version_id;
 
+    /// `getETagHash` of the ETag, 0 if not computed. Used only where a read asks for it.
+    UInt64 etag_hash = 0;
+
     explicit StoredObject(
         const String & remote_path_ = "",
         const String & local_path_ = "",
@@ -56,6 +59,8 @@ using StoredObjectsSpan = std::span<const StoredObject>;
 
 size_t getTotalSize(const StoredObjects & objects);
 Strings collectRemotePaths(const StoredObjects & objects);
+
+UInt64 getETagHash(const String & etag);
 
 }
 
