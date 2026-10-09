@@ -143,7 +143,7 @@ SELECT * FROM timeSeriesSamples('db_name', 'time_series_table');
 <Note>
 The function `timeSeriesSamples` has an alias `timeSeriesData` which is kept for backwards compatibility.
 </Note>
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerAlias("timeSeriesData", "timeSeriesSamples");
 
@@ -169,7 +169,7 @@ SELECT * FROM timeSeriesTags(db_name.time_series_table);
 SELECT * FROM timeSeriesTags('db_name.time_series_table');
 SELECT * FROM timeSeriesTags('db_name', 'time_series_table');
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerFunction<TableFunctionTimeSeriesTarget<ViewTarget::MetricFamilies>>(
         {.description = R"DOCS_MD(
@@ -197,7 +197,7 @@ SELECT * FROM timeSeriesMetricFamilies('db_name', 'time_series_table');
 <Note>
 The function `timeSeriesMetricFamilies` has an alias `timeSeriesMetrics` which is kept for backwards compatibility.
 </Note>
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerAlias("timeSeriesMetrics", "timeSeriesMetricFamilies");
 
@@ -218,7 +218,7 @@ SELECT * FROM timeSeriesHistograms(db_name.time_series_table);
 SELECT * FROM timeSeriesHistograms('db_name.time_series_table');
 SELECT * FROM timeSeriesHistograms('db_name', 'time_series_table');
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerFunction<TableFunctionTimeSeriesSelector>(
         {.description = R"DOCS_MD(
@@ -258,7 +258,7 @@ There is no specific order for returned data.
 ```sql
 SELECT * FROM timeSeriesSelector(mytable, 'http_requests{job="prometheus"}', now() - INTERVAL 10 MINUTES, now())
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerFunction<TableFunctionTimeSeriesHistogramSelector>(
         {.description = R"DOCS_MD(
@@ -296,7 +296,7 @@ There is no specific order for returned data.
 ```sql
 SELECT * FROM timeSeriesHistogramSelector(mytable, 'request_duration_seconds', now() - INTERVAL 10 MINUTES, now())
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 
     factory.registerFunction<TableFunctionPrometheusQuery</* range = */ false>>(
         {.description = R"DOCS_MD(
@@ -376,7 +376,7 @@ Unary operators `+` and `-`.
 ```sql
 SELECT * FROM prometheusQuery(mytable, 'rate(http_requests{job="prometheus"}[10m])[1h:10m]', now())
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
     factory.registerFunction<TableFunctionPrometheusQuery</* range = */ true>>(
         {.description = R"DOCS_MD(
 Evaluates a prometheus query using data from a TimeSeries table over a range of evaluation times.
@@ -457,7 +457,7 @@ Unary operators `+` and `-`.
 ```sql
 SELECT * FROM prometheusQueryRange(mytable, 'rate(http_requests{job="prometheus"}[10m])[1h:10m]', now() - INTERVAL 10 MINUTES, now(), INTERVAL 1 MINUTE)
 ```
-)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction});
+)DOCS_MD", .category = FunctionDocumentation::Category::TableFunction}, SecretArgumentsSpec{});
 }
 
 }
