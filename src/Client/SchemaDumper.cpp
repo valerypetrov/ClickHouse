@@ -15,6 +15,7 @@
 #include <Databases/TablesDependencyGraph.h>
 #include <Databases/enableAllExperimentalSettings.h>
 #include <Functions/FunctionFactory.h>
+#include <IO/Archives/ArchiveUtils.h>
 #include <IO/ConnectionTimeouts.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
@@ -2570,6 +2571,7 @@ struct ReplayGateNeeds
     bool ytsaurus_table = false;
     bool paimon_table = false;
     bool delta_lake_table = false;
+    bool archive_path = false; /// a table engine argument that names a file inside an archive (`a.tar :: f.csv`)
 
     /// Carriers of the shared gates, `parse_failed` keeps all of them.
     bool funnel_functions = false;
@@ -2975,7 +2977,7 @@ ReplayGateNeeds collectReplayGateNeeds(
                     .materialized_postgresql_table = true, .time_series_table = true,
                     .kafka_keeper_offsets = true, .nullable_tuple_type = true, .unique_key = true,
                     .data_lake_catalog_database = true, .ytsaurus_table = true, .paimon_table = true,
-                    .delta_lake_table = true, .codec_gates = {}, .data_lake_catalog_gates = {}};
+                    .delta_lake_table = true, .archive_path = true, .codec_gates = {}, .data_lake_catalog_gates = {}};
         }
 
         const auto * create = create_ast->as<ASTCreateQuery>();
@@ -3159,6 +3161,15 @@ ReplayGateNeeds collectReplayGateNeeds(
                     needs.paimon_table = true;
                 if (startsWithCaseInsensitive(engine->name, "DeltaLake"))
                     needs.delta_lake_table = true;
+                /// `File`, `URL` and the `S3` family split an archive path at CREATE only under `allow_archive_path_syntax`.
+                if (engine->arguments)
+                    forEachNode(*engine->arguments, [&needs](const IAST & node)
+                    {
+                        const auto * literal = node.as<ASTLiteral>();
+                        if (literal && literal->value.getType() == Field::Types::String
+                            && !splitToArchivePathAndPathInArchive(literal->value.safeGet<String>()).first.empty())
+                            needs.archive_path = true;
+                    });
             }
         }
 
@@ -3349,6 +3360,8 @@ String replaySettingsPrelude(
         {"database_replicated_allow_explicit_uuid", "3"},
         /// Value 0 keeps a table that stores data on disk without replication in a `Replicated` database.
         {"database_replicated_allow_only_replicated_engine", "0"},
+        /// Without it a File table reads the archive path as a plain file name, and an S3 table fails to create.
+        {"allow_archive_path_syntax", "1"},
     };
     /// Emit only dump-specific gates known by the source server and required by these statements.
     const ReplayGateNeeds needs = collectReplayGateNeeds(create_queries, context, analyzes_on_source);
@@ -3374,6 +3387,8 @@ String replaySettingsPrelude(
             return needs.kafka_keeper_offsets;
         if (name == "enable_nullable_tuple_type")
             return needs.nullable_tuple_type;
+        if (name == "allow_archive_path_syntax")
+            return needs.archive_path;
         return false;
     };
 

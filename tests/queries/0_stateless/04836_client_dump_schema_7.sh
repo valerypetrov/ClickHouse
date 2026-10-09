@@ -350,6 +350,20 @@ CREATE MATERIALIZED VIEW ${DB}.mv_lateral ENGINE = Memory AS SELECT o.k AS k, l.
 "
 echo "LATERAL materialized view, lateral gate emitted: $(grep -c '^SET allow_experimental_lateral_join = 1;' "$DUMP_FILE")"
 replay_local 'LATERAL materialized view' 'mv%'
+# The replay instance runs with allow_archive_path_syntax = 0, so only the dump's SET lets the S3 table be created
+# and the File table read the archive instead of a file named after the whole path.
+ARCHIVE_DIR="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_archive"
+rm -rf "$ARCHIVE_DIR" && mkdir -p "$ARCHIVE_DIR" && printf '1\n2\n' > "$ARCHIVE_DIR/data.csv" && tar -cf "$ARCHIVE_DIR/a.tar" -C "$ARCHIVE_DIR" data.csv
+make_dump "
+CREATE TABLE ${DB}.f_arch (x UInt64) ENGINE = File(CSV, '${ARCHIVE_DIR}/a.tar :: data.csv');
+CREATE TABLE ${DB}.s_arch (x UInt64) ENGINE = S3('http://127.0.0.1:1/bucket/a.tar :: data.csv', NOSIGN, CSV);
+"
+echo "archive paths in File and S3 tables, archive gate emitted: $(grep -c '^SET allow_archive_path_syntax = 1;' "$DUMP_FILE")"
+{ cat "$DUMP_FILE"; echo "SELECT 'File table over an archive, rows', count() FROM ${DB}.f_arch;"; } > "${DUMP_FILE}.read"
+rm -rf "$REPLAY_PATH"
+$CLICKHOUSE_LOCAL --path "$REPLAY_PATH" --allow_archive_path_syntax=0 --multiquery --queries-file "${DUMP_FILE}.read" 2>"$ERR_FILE" \
+    && echo 'OK: archive paths replayed' || echo "FAIL: archive paths replay rejected: $(cat "$ERR_FILE")"
+rm -rf "$REPLAY_PATH" "$ARCHIVE_DIR" "${DUMP_FILE}.read"
 
 echo '--- a plain dump replays under every carrier-gate constraint ---'
 CONSTRAINT_DB="${DB}_sweep"

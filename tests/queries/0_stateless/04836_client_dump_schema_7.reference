@@ -107,6 +107,9 @@ columns named lowcardinality, fixedstring, json and neighbor, their gates emitte
 LATERAL materialized view, lateral gate emitted: 1
 OK: LATERAL materialized view replayed
 LATERAL materialized view, replayed objects: 1
+archive paths in File and S3 tables, archive gate emitted: 1
+File table over an archive, rows	2
+OK: archive paths replayed
 --- a plain dump replays under every carrier-gate constraint ---
 plain dump, join-key/minmax-JSON/suspicious-index/url-wildcard gates emitted: 0
 OK: constrained replay succeeded
