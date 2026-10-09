@@ -88,7 +88,15 @@ for tool in local client; do
 done
 $CLICKHOUSE_CLIENT --dump-schema="${DB}" --external --file="$STDIN_FILE" --name=ext --structure='a UInt8, b UInt8' > /dev/null 2>"$ERR_FILE"
 echo "client, external table rejected: $(grep -c 'BAD_ARGUMENTS' "$ERR_FILE")"
+$CLICKHOUSE_CLIENT --dump-schema="${DB}" --external --file="$STDIN_FILE" --name=ext --structure='a UInt8, b UInt8' --scalar > /dev/null 2>"$ERR_FILE"
+echo "client, external scalar rejected: $(grep -c 'BAD_ARGUMENTS' "$ERR_FILE")"
 rm -f "$STDIN_FILE"
+
+echo '--- each frontend help names what it refuses with --dump-schema ---'
+$CLICKHOUSE_LOCAL --help | tr -s ' \n' ' ' \
+    | grep -c -F 'Cannot be combined with `--query`, `--queries-file`, `--file`, `--structure`, `--input-format` or a file, pipe or socket on stdin.'
+$CLICKHOUSE_CLIENT --help | tr -s ' \n' ' ' \
+    | grep -c -F 'Cannot be combined with `--query`, `--queries-file`, `--external` (including `--scalar`) or input on stdin.'
 
 echo '--- merge()/loop() with constant-expression arguments name their local source ---'
 # Each view reads its source only through folded merge()/loop() arguments.

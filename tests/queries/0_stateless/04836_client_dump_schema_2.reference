@@ -21,6 +21,10 @@ client, piped query rejected: 1
 client, empty pipe rejected: 0
 client, /dev/null on stdin exit code: 0
 client, external table rejected: 1
+client, external scalar rejected: 1
+--- each frontend help names what it refuses with --dump-schema ---
+1
+1
 --- merge()/loop() with constant-expression arguments name their local source ---
 OK: folded source dumped before aaa_merge_folded
 OK: folded source dumped before aab_loop_folded

@@ -277,6 +277,12 @@ protected:
     /// on the input side.
     virtual std::string_view mappedFormatOptionSetting() const { return "output_format"; }
 
+    /// What `--dump-schema` cannot be combined with, as its help names it.
+    virtual std::string_view dumpSchemaConflicts() const
+    {
+        return "`--query`, `--queries-file`, `--external` (including `--scalar`) or input on stdin";
+    }
+
     static std::filesystem::path getHistoryFilePath();
 private:
     /// Runs a small service query against `system.documentation` (used by `processHelpCommand`),
