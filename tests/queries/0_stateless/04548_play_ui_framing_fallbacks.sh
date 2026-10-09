@@ -311,6 +311,8 @@ echo "$page" | grep -q -F 'if (options.progressMeter) options.progressMeter(+pro
     && echo 'replayed progress samples the IO rate: OK'
 # The result sends of remote shards to the initiator count too: an HTTP query has no own `NativeProtocolDataBytes`.
 echo "$page" | grep -q -F "|| e.name === 'NativeProtocolDataBytes' || e.name === 'NativeProtocolDataReceiveBytes'" && echo 'remote native result sends feed the IO meter: OK'
+# The page sends the query and its data as the HTTP request body, so the browser's upload counts too.
+echo "$page" | grep -q -F "|| e.name === 'InterfaceHTTPReceiveBytes'" && echo 'browser upload feeds the IO meter: OK'
 # Result payload bytes make the meter live without any profile_events batch (send_profile_events = 0).
 echo "$page" | awk '/^function accumulateResultPayload/,/^}/' | grep -q -F 'state.has = true;' && echo 'result payload alone makes the meter live: OK'
 # An NDJSON stream cut off in the middle of its terminal exception line is a truncation, not a real

@@ -74,3 +74,25 @@ SELECT
 FROM system.query_log
 WHERE event_date >= yesterday() AND type = 'QueryFinish'
     AND current_database = currentDatabase() AND query_id = '${query_id_prefix}_gzip_data'"
+
+# The Play UI adds `InterfaceHTTPReceiveBytes` to its IO meter: the request headers are read before
+# the query starts, so a plain query counts at most its own text (the request body).
+${CLICKHOUSE_CLIENT} -q "
+SELECT
+    'framed query counts no request headers',
+    ProfileEvents['InterfaceHTTPReceiveBytes'] <= length(query)
+FROM system.query_log
+WHERE event_date >= yesterday() AND type = 'QueryFinish'
+    AND current_database = currentDatabase() AND query_id = '${query_id_prefix}_plain'"
+
+# The data of an `INSERT` sent in the request body, as the Play UI sends it, streams as `InterfaceHTTPReceiveBytes`.
+function upload_body()
+{
+    echo "INSERT INTO FUNCTION null('x UInt64') FORMAT TSV"
+    seq 1 900000
+}
+upload_size=$(upload_body | wc -c)
+upload_received=$(upload_body | ${CLICKHOUSE_CURL} -sS "${framing_url}&async_insert=0&query_id=${query_id_prefix}_upload" --data-binary @- \
+    | grep -o '"thread_id":"0","type":"increment","name":"InterfaceHTTPReceiveBytes","value":"[0-9]*"' \
+    | grep -o '[0-9]*"$' | tr -d '"' | awk '{ s += $1 } END { print s + 0 }')
+echo "framed INSERT streams its request body as InterfaceHTTPReceiveBytes: $(( 2 * upload_received > upload_size && upload_received <= upload_size ))"
