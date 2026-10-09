@@ -91,12 +91,20 @@ namespace
         return false;
     }
 
-    /// (SELECT count() FROM left) > 0
+    /// (SELECT count() FROM left WHERE arrayExists(x -> isNotNull(x), values)) > 0
+    /// A row without any value is not a sample, e.g. a row of `requests > 1000` where every value is filtered out.
     ASTPtr makeNotEmptyCondition(const String & table)
     {
         SelectQueryBuilder builder;
         builder.select_list.push_back(makeASTFunction("count"));
         builder.from_table = table;
+        builder.where = makeASTFunction(
+            "arrayExists",
+            makeASTFunction(
+                "lambda",
+                makeASTFunction("tuple", make_intrusive<ASTIdentifier>("x")),
+                makeASTFunction("isNotNull", make_intrusive<ASTIdentifier>("x"))),
+            make_intrusive<ASTIdentifier>(ColumnNames::Values));
         return makeASTFunction("greater", make_intrusive<ASTSubquery>(builder.getSelectQuery()), make_intrusive<ASTLiteral>(0u));
     }
 
@@ -200,7 +208,7 @@ namespace
                 return;
 
             /// Step 1:
-            /// SELECT timeSeriesIdToGroup(id) AS group FROM <selector> WHERE (SELECT count() FROM left) > 0 GROUP BY id
+            /// SELECT timeSeriesIdToGroup(id) AS group FROM <selector> WHERE <left is not empty> GROUP BY id
             SelectQueryBuilder groups_builder;
             groups_builder.select_list.push_back(makeASTFunction("timeSeriesIdToGroup", make_intrusive<ASTIdentifier>(ColumnNames::ID)));
             groups_builder.select_list.back()->setAlias(ColumnNames::Group);
@@ -477,7 +485,7 @@ namespace
                 subquery_type = SQLSubqueryType::MATERIALIZED_TABLE;
             }
 
-            /// WHERE (SELECT count() FROM left) > 0
+            /// WHERE <left is not empty>, see makeNotEmptyCondition()
             if (!is_left_side && check_right_if_left_not_empty)
             {
                 ASTPtr left_not_empty = makeNotEmptyCondition(sides[0]);

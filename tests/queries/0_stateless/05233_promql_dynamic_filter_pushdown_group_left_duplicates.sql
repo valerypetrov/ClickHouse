@@ -28,6 +28,9 @@ SELECT '-- with an empty left side the duplicate is not reported, as in Promethe
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests{dc="nonexistent"} * on (dc) group_left (env) target_info', 110) ORDER BY tags;
 SELECT * FROM prometheusQuery('t_promql_dfp', 'requests{dc="nonexistent"} * on (dc) group_left (env) (target_info offset 10s)', 110) ORDER BY tags;
 
+SELECT '-- a left side whose series have no value left after a filter is empty too';
+SELECT * FROM prometheusQuery('t_promql_dfp', '(requests > 1000) * on (dc) group_left (env) target_info', 110) ORDER BY tags;
+
 SELECT '-- a duplicate on a matched join group is still reported';
 INSERT INTO t_promql_dfp (metric_name, tags, samples) VALUES
     ('target_info', map('dc', 'a', 'env', 'prod_dup'), [(toDateTime64(100, 3), 1), (toDateTime64(110, 3), 1)]);
