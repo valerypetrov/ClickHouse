@@ -130,6 +130,8 @@ private:
             first = index;
         if (index < first || index - first >= 2 * (count + 1))
         {
+            /// An index below the array means descending samples, which would move the buckets back and forth.
+            moves_below += index < first;
             moveToMap();
             return;
         }
@@ -161,6 +163,9 @@ private:
     /// Moves the buckets to an array over the indices they span if they fill at least half of it.
     bool moveToArrayIfDense()
     {
+        if (moves_below >= 2)
+            return false;
+
         size_t min_index = std::numeric_limits<size_t>::max();
         size_t max_index = 0;
         for (const auto & cell : *map)
@@ -191,6 +196,7 @@ private:
     VectorWithMemoryTracking<UInt8> present;  /// Whether slot `i` was added, as the map keeps added empty buckets.
     size_t first = 0;
     size_t count = 0;                         /// The number of added slots.
+    UInt8 moves_below = 0;                    /// How many times an index below the array moved the buckets to the map.
 };
 
 /// Base class for time series aggregate functions that map values to a grid specified by start timestamp, end timestamp, step and window.
