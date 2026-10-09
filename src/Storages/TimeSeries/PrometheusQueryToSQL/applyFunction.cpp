@@ -36,6 +36,29 @@ namespace
         "double_exponential_smoothing", "end", "histogram_avg", "histogram_count", "histogram_fraction", "histogram_quantiles",
         "histogram_stddev", "histogram_stdvar", "histogram_sum", "info", "integral", "range", "sort",
         "sort_by_label", "sort_by_label_desc", "sort_desc", "start", "start_timestamp", "step"};
+
+    bool isKnownFunction(std::string_view function_name)
+    {
+        return isFunctionVector(function_name) || isFunctionScalar(function_name) || isFunctionTime(function_name)
+            || isFunctionAbsent(function_name) || isDateTimeFunction(function_name) || isOneArgumentMathFunction(function_name)
+            || isClampFunction(function_name) || isMinMaxOfFunction(function_name) || isRoundFunction(function_name)
+            || isFunctionPi(function_name) || isLabelManipulationFunction(function_name) || isFunctionPredictLinear(function_name)
+            || isFunctionQuantileOverTime(function_name) || isFunctionTimestamp(function_name) || isFunctionOverRange(function_name)
+            || isHistogramQuantile(function_name) || std::ranges::contains(not_implemented_functions, function_name);
+    }
+}
+
+void checkFunctionNames(const Node * node)
+{
+    for (const auto * child : node->children)
+        checkFunctionNames(child);
+
+    if (node->node_type != NodeType::Function)
+        return;
+
+    const String & function_name = static_cast<const PrometheusQueryTree::Function *>(node)->function_name;
+    if (!isKnownFunction(function_name))
+        throw Exception(ErrorCodes::UNKNOWN_FUNCTION, "unknown function with name \"{}\"", function_name);
 }
 
 SQLQueryPiece applyFunction(
@@ -91,10 +114,7 @@ SQLQueryPiece applyFunction(
     if (isHistogramQuantile(function_name))
         return applyHistogramQuantile(function_node, std::move(arguments), context);
 
-    if (std::ranges::contains(not_implemented_functions, function_name))
-        throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Function {} is not implemented", function_name);
-
-    throw Exception(ErrorCodes::UNKNOWN_FUNCTION, "unknown function with name \"{}\"", function_name);
+    throw Exception(ErrorCodes::NOT_IMPLEMENTED, "Function {} is not implemented", function_name);
 }
 
 }

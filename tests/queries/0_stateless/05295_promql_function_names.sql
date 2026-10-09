@@ -31,6 +31,13 @@ SELECT * FROM prometheusQuery('prometheus', 'foo_bar (rate)', 110); -- { serverE
 SELECT * FROM prometheusQuery('prometheus', 'Rate(rate[1m])', 110); -- { serverError UNKNOWN_FUNCTION }
 SELECT * FROM prometheusQuery('prometheus', 'info(rate)', 110); -- { serverError NOT_IMPLEMENTED }
 
+SELECT '-- unknown functions fail before execution, known ones are described';
+DESCRIBE prometheusQuery('prometheus', 'foo_bar(rate)', 110); -- { serverError UNKNOWN_FUNCTION }
+DESCRIBE prometheusQuery('prometheus', 'abs(foo_bar(rate))', 110); -- { serverError UNKNOWN_FUNCTION }
+DESCRIBE prometheusQueryRange('prometheus', 'foo_bar(rate)', 100, 110, 10); -- { serverError UNKNOWN_FUNCTION }
+CREATE VIEW unknown_function_view AS SELECT * FROM prometheusQuery('prometheus', 'foo_bar(rate)', 110); -- { serverError UNKNOWN_FUNCTION }
+DESCRIBE prometheusQuery('prometheus', 'info(rate)', 110);
+
 SELECT '-- start and end';
 SELECT * FROM prometheusQuery('prometheus', 'start()', 110); -- { serverError NOT_IMPLEMENTED }
 SELECT * FROM prometheusQuery('prometheus', 'end()', 110); -- { serverError NOT_IMPLEMENTED }
