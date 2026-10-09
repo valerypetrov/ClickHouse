@@ -4,9 +4,15 @@ timeSeriesTags: grant INSERT ON db.ts (ACCESS_DENIED)
 timeSeriesTagsMinMax: grant INSERT ON db.ts (ACCESS_DENIED)
 timeSeriesMetricFamilies: grant INSERT ON db.ts (ACCESS_DENIED)
 0	0	0	0
--- with INSERT:
+-- with SELECT and INSERT:
 timeSeriesSamples: OK
 timeSeriesTags: OK
 timeSeriesTagsMinMax: OK
 timeSeriesMetricFamilies: OK
+1	1	1	1
+-- with INSERT only:
+timeSeriesSamples: grant SELECT ON db.ts (ACCESS_DENIED)
+timeSeriesTags: grant SELECT ON db.ts (ACCESS_DENIED)
+timeSeriesTagsMinMax: grant SELECT ON db.ts (ACCESS_DENIED)
+timeSeriesMetricFamilies: grant SELECT ON db.ts (ACCESS_DENIED)
 1	1	1	1

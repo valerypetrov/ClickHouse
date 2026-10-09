@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Writing through a target table function of a TimeSeries table writes into that table,
-# so it needs the INSERT grant on it, the same as `INSERT INTO` the table.
+# Writing through a target table function of a TimeSeries table needs INSERT on that table,
+# besides the SELECT on it that every use of these functions needs.
 
 CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=none
 
@@ -30,7 +30,7 @@ function try_inserts()
         "timeSeriesMetricFamilies(${db}.ts) (metric_family, type) VALUES ('m', 'gauge')"
     do
         error=$(${CLICKHOUSE_CLIENT} --user "${user}" --async_insert 0 -q "INSERT INTO FUNCTION ${insert}" 2>&1 \
-            | grep -m1 -oE "grant INSERT ON ${db}\.ts|\([A-Z_]+\)" | sed "s/${db}/db/" | paste -sd ' ' -)
+            | grep -m1 -oE "grant (SELECT|INSERT) ON ${db}\.ts|\([A-Z_]+\)" | sed "s/${db}/db/" | paste -sd ' ' -)
         echo "${insert%%(*}: ${error:-OK}"
     done
     ${CLICKHOUSE_CLIENT} -q "
@@ -42,7 +42,10 @@ function try_inserts()
 try_inserts "SELECT only"
 
 ${CLICKHOUSE_CLIENT} -q "GRANT INSERT ON ${db}.ts TO ${user}"
-try_inserts "INSERT"
+try_inserts "SELECT and INSERT"
+
+${CLICKHOUSE_CLIENT} -q "REVOKE SELECT ON ${db}.ts FROM ${user}"
+try_inserts "INSERT only"
 
 ${CLICKHOUSE_CLIENT} -q "
     DROP TABLE ${db}.ts;

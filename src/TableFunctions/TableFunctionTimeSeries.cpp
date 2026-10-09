@@ -92,7 +92,7 @@ StoragePtr TableFunctionTimeSeriesTarget<target_kind>::executeImpl(
         ColumnsDescription /* cached_columns */,
         bool is_insert_query) const
 {
-    /// Writing here writes into the TimeSeries table, so it needs the same grant as `INSERT INTO` that table.
+    /// Writing through this function needs INSERT on the TimeSeries table, besides the SELECT every use needs.
     if (is_insert_query)
         context->checkAccess(AccessType::INSERT, time_series_storage_id);
     return getTargetTable(context);
