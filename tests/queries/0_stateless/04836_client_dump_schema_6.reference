@@ -11,3 +11,8 @@ YTsaurus table, engine gate emitted: 1
 reader dumped: 1
 unlisted catalog named for the database-less reader: 1
 unlistable catalog in the dump set still refused: 1
+--- an unreachable omitted Remote database fails only the checks that need its tables ---
+qualified reader dumped: 1
+stderr lines: 0
+database-less reader dumped: 1
+unlisted Remote database named for the database-less reader: 1

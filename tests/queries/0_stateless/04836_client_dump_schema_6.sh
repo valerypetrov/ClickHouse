@@ -120,3 +120,32 @@ $CLICKHOUSE_CLIENT --multiquery --query "
     DROP DATABASE IF EXISTS ${READER_DB} SYNC;
 "
 rm -f "$CATALOG_DUMP_FILE" "$ERR_FILE"
+
+echo '--- an unreachable omitted Remote database fails only the checks that need its tables ---'
+# Nothing listens on port 1, so listing this database's tables fails at once.
+REMOTE_PATH="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_dead_remote"
+REMOTE_DUMP_FILE="${CLICKHOUSE_TMP}/${CLICKHOUSE_TEST_UNIQUE_NAME}_dead_remote.sql"
+rm -rf "$REMOTE_PATH"
+$CLICKHOUSE_LOCAL --path "$REMOTE_PATH" --multiquery --query "
+CREATE DATABASE ${DB};
+CREATE TABLE ${DB}.src (id UInt64) ENGINE = MergeTree ORDER BY id;
+CREATE VIEW ${DB}.qualified_reader AS SELECT * FROM ${DB}.src;
+CREATE DATABASE dead_remote ENGINE = Remote('127.0.0.1:1', 'default');
+"
+if $CLICKHOUSE_LOCAL --path "$REMOTE_PATH" --dump-schema="${DB}" > "$REMOTE_DUMP_FILE" 2>"$ERR_FILE"; then
+    echo "qualified reader dumped: $(grep -c "CREATE VIEW ${DB}\.qualified_reader " "$REMOTE_DUMP_FILE")"
+    echo "stderr lines: $(wc -l < "$ERR_FILE" | tr -d ' ')"
+else
+    echo "FAIL: dump failed over an unrelated Remote database: $(cat "$ERR_FILE")"
+fi
+$CLICKHOUSE_LOCAL --path "$REMOTE_PATH" --multiquery --query "
+USE ${DB};
+CREATE VIEW ${DB}.merge_reader AS SELECT * FROM merge('', '^src\$');
+"
+if $CLICKHOUSE_LOCAL --path "$REMOTE_PATH" --dump-schema="${DB}" > "$REMOTE_DUMP_FILE" 2>"$ERR_FILE"; then
+    echo "database-less reader dumped: $(grep -c "CREATE VIEW ${DB}\.merge_reader " "$REMOTE_DUMP_FILE")"
+    echo "unlisted Remote database named for the database-less reader: $(grep -F "${DB}.merge_reader references merge('', '^src\$') without a database" "$ERR_FILE" | grep -cF 'dead_remote')"
+else
+    echo "FAIL: dump with a database-less reader failed over an unrelated Remote database: $(cat "$ERR_FILE")"
+fi
+rm -rf "$REMOTE_PATH" "$REMOTE_DUMP_FILE" "$ERR_FILE"

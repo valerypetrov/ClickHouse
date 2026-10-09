@@ -347,7 +347,7 @@ struct TableInfo
     /// Database-less references no dumped database contains. They resolve against `database` on
     /// replay, which does not contain them either, so the dump cannot create them.
     std::vector<String> unresolved_references;
-    /// Database-less references that a catalog database whose tables could not be listed may also hold.
+    /// Database-less references that an omitted database whose tables could not be listed may also hold.
     std::vector<String> unchecked_references;
     NamedCollectionDependencies named_collections;
     /// Materialized view only: replay may reach a check that `allow_materialized_view_with_bad_select` relaxes.
@@ -1093,13 +1093,20 @@ bool engineCanBind(ReferenceKind kind, const String & engine)
     }
 }
 
+/// Tables (name -> engine) of the databases left out of the dump, and the databases whose tables could not be listed.
+struct OmittedTables
+{
+    std::map<String, std::map<String, String>> by_database;
+    std::set<String> unlisted;
+};
+using OmittedTablesGetter = std::function<const OmittedTables &()>;
+
 /// Collects local `merge` and `loop` references, resolving empty `merge` databases to the owner.
 void collectMergeAndLoopReferences(
     const IAST & node,
     const std::map<String, std::set<String>> & table_names_by_db,
     const std::set<String> & undumped_databases,
-    const std::map<String, std::map<String, String>> & undumped_tables_by_db,
-    const std::set<String> & unlisted_databases,
+    const OmittedTablesGetter & omitted_tables,
     const String & owning_database,
     const ContextPtr & context,
     std::vector<TableReference> & out,
@@ -1119,6 +1126,9 @@ void collectMergeAndLoopReferences(
 
             if (database_pattern && table_pattern)
             {
+                /// Listed here, outside the try below, so a failed listing is not taken for a malformed regexp.
+                const bool database_less = !database_is_regexp && database_pattern->empty();
+                const OmittedTables * omitted = database_less ? &omitted_tables() : nullptr;
                 String merge_ambiguous_dbs;
                 bool merge_owning_matches = true;
                 try
@@ -1146,7 +1156,7 @@ void collectMergeAndLoopReferences(
 
                     OptimizedRegularExpression table_regexp(*table_pattern);
                     /// Refuse empty-database references that the owning database cannot resolve uniquely.
-                    if (!database_is_regexp && database_pattern->empty())
+                    if (database_less)
                     {
                         for (const auto & [db, tables] : table_names_by_db)
                         {
@@ -1173,7 +1183,7 @@ void collectMergeAndLoopReferences(
                         /// omitted database also has matching tables, the create-time session could
                         /// have been the omitted one, and replaying under USE <own db> would rebind.
                         if (merge_owning_matches)
-                            for (const auto & [db, tables] : undumped_tables_by_db)
+                            for (const auto & [db, tables] : omitted->by_database)
                                 if (db != owning_database)
                                     for (const auto & table_and_engine : tables)
                                         if (table_regexp.match(table_and_engine.first))
@@ -1183,7 +1193,7 @@ void collectMergeAndLoopReferences(
                                             merge_ambiguous_dbs += backQuoteIfNeed(db) + " (omitted)";
                                             break;
                                         }
-                        if (merge_owning_matches && !unlisted_databases.empty())
+                        if (merge_owning_matches && !omitted->unlisted.empty())
                             unchecked.push_back("merge('', " + quoteString(*table_pattern) + ")");
                     }
                     for (const auto & db : matched_databases)
@@ -1704,8 +1714,7 @@ std::vector<TableInfo> resolveTables(
     std::vector<RawTableRow> rows,
     const ClusterLocality & clusters,
     const std::set<String> & undumped_databases,
-    const std::map<String, std::map<String, String>> & undumped_tables_by_db,
-    const std::set<String> & unlisted_databases,
+    const OmittedTablesGetter & omitted_tables,
     const std::map<String, String> & database_queries,
     const std::map<String, DatabaseInfo> & database_info)
 {
@@ -2013,7 +2022,7 @@ std::vector<TableInfo> resolveTables(
                 /// If an omitted database has the same table, the create-time session could have
                 /// been that database, and replaying under `USE <own db>` would silently rebind.
                 String omitted_databases;
-                for (const auto & [db, engines] : undumped_tables_by_db)
+                for (const auto & [db, engines] : omitted_tables().by_database)
                 {
                     auto engine_it = engines.find(resolved.second);
                     if (db == row.database || engine_it == engines.end() || !engineCanBind(candidate.kind, engine_it->second))
@@ -2030,8 +2039,8 @@ std::vector<TableInfo> resolveTables(
                         "so replaying under USE {} could silently rebind it",
                         backQuoteIfNeed(resolved.second), backQuoteIfNeed(row.database), backQuoteIfNeed(row.name),
                         backQuoteIfNeed(row.database), omitted_databases, backQuoteIfNeed(row.database));
-                /// A catalog table can never be a dictionary or a Join table, so only a plain table reference is unchecked.
-                if (candidate.kind == ReferenceKind::Any && !unlisted_databases.empty())
+                /// An unlisted database is one served by an outside service, which holds no dictionary or Join table.
+                if (candidate.kind == ReferenceKind::Any && !omitted_tables().unlisted.empty())
                     row.unchecked_references.push_back(backQuoteIfNeed(resolved.second));
                 resolved.first = row.database;
             }
@@ -2046,7 +2055,7 @@ std::vector<TableInfo> resolveTables(
                 references.push_back({table_id->getDatabaseName(), table_id->shortName()});
             collectFunctionArgumentReferences(node, clusters, references);
             collectMergeAndLoopReferences(
-                node, all_table_names_by_db, undumped_databases, undumped_tables_by_db, unlisted_databases, row.database,
+                node, all_table_names_by_db, undumped_databases, omitted_tables, row.database,
                 clusters.context, references, row.unchecked_references);
         });
         for (const auto & candidate : references)
@@ -2279,7 +2288,7 @@ std::vector<TableInfo> fetchTables(
         if (!DatabaseCatalog::isPredefinedDatabase(db))
             undumped_databases_to_scan.insert(db);
 
-    std::map<String, std::map<String, String>> undumped_tables_by_db;
+    OmittedTables scanned;
     auto scan_undumped = [&](const std::vector<String> & names)
     {
         String undumped_list;
@@ -2301,47 +2310,57 @@ std::vector<TableInfo> fetchTables(
                 const auto & name_col = typeid_cast<const ColumnString &>(*full.getByPosition(1).column);
                 const auto & engine_col = typeid_cast<const ColumnString &>(*full.getByPosition(2).column);
                 for (size_t i = 0; i < db_col.size(); ++i)
-                    undumped_tables_by_db[db_col[i].safeGet<String>()].emplace(
+                    scanned.by_database[db_col[i].safeGet<String>()].emplace(
                         name_col[i].safeGet<String>(), engine_col[i].safeGet<String>());
             }, context->getSettingsRef(), undumped_visibility.show_datalake_catalogs, undumped_visibility.show_remote_databases);
     };
-    std::vector<String> plain_databases;
-    std::vector<String> catalog_databases;
-    for (const auto & db : undumped_databases_to_scan)
+    /// Listed on first need only: most dumps have no database-less reference to check, and an external database can be down.
+    std::optional<OmittedTables> omitted;
+    const OmittedTablesGetter omitted_tables = [&]() -> const OmittedTables &
     {
-        auto it = database_info.find(db);
-        if (it != database_info.end() && it->second.engine == "DataLakeCatalog")
-            catalog_databases.push_back(db);
-        else
-            plain_databases.push_back(db);
-    }
-    if (!plain_databases.empty())
-        scan_undumped(plain_databases);
-    /// A catalog lists its tables by asking an outside service, which can fail for reasons unrelated to this dump.
-    for (const auto & db : catalog_databases)
-    {
-        try
+        if (omitted)
+            return *omitted;
+        std::vector<String> plain_databases;
+        std::vector<String> external_databases;
+        for (const auto & db : undumped_databases_to_scan)
         {
-            scan_undumped({db});
+            auto it = database_info.find(db);
+            if (it != database_info.end() && it->second.is_external)
+                external_databases.push_back(db);
+            else
+                plain_databases.push_back(db);
         }
-        catch (const Exception &)
+        if (!plain_databases.empty())
+            scan_undumped(plain_databases);
+        /// An external database lists its tables by asking an outside service, which can fail for reasons unrelated to this dump.
+        for (const auto & db : external_databases)
         {
-            unlisted_databases.insert(db);
+            try
+            {
+                scan_undumped({db});
+            }
+            catch (const Exception &)
+            {
+                scanned.unlisted.insert(db);
+            }
         }
-    }
+        return omitted.emplace(std::move(scanned));
+    };
 
     /// A database engine carries a collection the same way a table engine does.
     for (const auto & [db, create_query] : database_queries)
         database_named_collections.emplace(db, namedCollectionsOfCreate(create_query, clusters));
 
-    return resolveTables(
+    auto tables = resolveTables(
         fetchRawRows(connection, timeouts, client_info, databases, context->getSettingsRef()),
         clusters,
         undumped_databases,
-        undumped_tables_by_db,
-        unlisted_databases,
+        omitted_tables,
         database_queries,
         database_info);
+    if (omitted)
+        unlisted_databases = omitted->unlisted;
+    return tables;
 }
 
 /// Warns when stored CREATE statements contain masked credentials.
@@ -2504,7 +2523,7 @@ void reportDependenciesOutsideDumpSet(
                 unchecked.emplace(table.database, table.name, reference);
     for (const auto & [database, name, reference] : unchecked)
         err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " references " << reference
-            << " without a database, and the tables of DataLakeCatalog database(s) " << unlisted
+            << " without a database, and the tables of omitted external database(s) " << unlisted
             << " could not be listed to rule out the same name there; if one has it, the object may have been created "
             << "reading that one, while replay reads the one in " << backQuoteIfNeed(database) << ".\n";
 
