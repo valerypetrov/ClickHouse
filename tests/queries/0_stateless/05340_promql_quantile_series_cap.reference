@@ -3,8 +3,18 @@
 2
 -- SELECT value FROM prometheusQuery('prometheus', 'quantile(0.5, four)', 60)
 error 395: PromQL aggregation operator 'quantile' got more than 3 series in one group at one step, see the server setting aggregate_function_group_array_max_element_size
--- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(0.5)), four)', 60)
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, three)', 60)
+2
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, four)', 60)
 error 395: PromQL aggregation operator 'quantile' got more than 3 series in one group at one step, see the server setting aggregate_function_group_array_max_element_size
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(-0.5, four)', 60)
+-inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 - 0.5, four)', 60)
+-inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 1.5, four)', 60)
+inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + NaN, four)', 60)
+nan
 -- SELECT tags, value FROM prometheusQuery('prometheus', 'quantile by (g) (0.5, four)', 60) ORDER BY tags
 [('g','x')]	1.5
 [('g','y')]	6
@@ -15,8 +25,18 @@ error 395: PromQL aggregation operator 'quantile' got more than 3 series in one 
 2
 -- SELECT value FROM prometheusQuery('prometheus', 'quantile(0.5, four)', 60)
 error 395: PromQL aggregation operator 'quantile' got more than 3 series in one group at one step, see the server setting aggregate_function_group_array_max_element_size
--- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(0.5)), four)', 60)
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, three)', 60)
+2
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, four)', 60)
 error 395: PromQL aggregation operator 'quantile' got more than 3 series in one group at one step, see the server setting aggregate_function_group_array_max_element_size
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(-0.5, four)', 60)
+-inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 - 0.5, four)', 60)
+-inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 1.5, four)', 60)
+inf
+-- SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + NaN, four)', 60)
+nan
 -- SELECT tags, value FROM prometheusQuery('prometheus', 'quantile by (g) (0.5, four)', 60) ORDER BY tags
 [('g','x')]	1.5
 [('g','y')]	6

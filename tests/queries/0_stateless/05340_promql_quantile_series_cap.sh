@@ -39,7 +39,14 @@ for action in throw discard; do
     echo "---- $action"
     run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(0.5, three)', 60)"
     run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(0.5, four)', 60)"
-    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(0.5)), four)', 60)"
+    # `scalar(vector(time())) * 0 + x` is a phi only known at runtime.
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, three)', 60)"
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 0.5, four)', 60)"
+    # A phi outside [0, 1] gives a constant, so the limit does not apply, for a literal and a runtime phi alike.
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(-0.5, four)', 60)"
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 - 0.5, four)', 60)"
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + 1.5, four)', 60)"
+    run "$action" "SELECT value FROM prometheusQuery('prometheus', 'quantile(scalar(vector(time())) * 0 + NaN, four)', 60)"
     run "$action" "SELECT tags, value FROM prometheusQuery('prometheus', 'quantile by (g) (0.5, four)', 60) ORDER BY tags"
     # Four series in the group, but at most three at one step.
     run "$action" "SELECT samples FROM prometheusQueryRange('prometheus', 'quantile(0.5, spread)', 60, 1000, 940)"
