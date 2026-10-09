@@ -1,6 +1,7 @@
 #include <TableFunctions/TableFunctionTimeSeries.h>
 
 #include <Access/Common/AccessFlags.h>
+#include <Access/ContextAccess.h>
 #include <Interpreters/Context.h>
 #include <Interpreters/DatabaseCatalog.h>
 #include <Interpreters/evaluateConstantExpression.h>
@@ -70,7 +71,6 @@ void TableFunctionTimeSeriesTarget<target_kind>::parseArguments(const ASTPtr & a
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Couldn't get a table name from the arguments of the {} table function", name);
 
     time_series_storage_id = context->resolveStorageID(time_series_storage_id);
-    context->checkAccess(AccessType::SELECT, time_series_storage_id);
     target_table_type_name = getTargetTable(context)->getName();
 }
 
@@ -78,7 +78,9 @@ void TableFunctionTimeSeriesTarget<target_kind>::parseArguments(const ASTPtr & a
 template <ViewTarget::Kind target_kind>
 StoragePtr TableFunctionTimeSeriesTarget<target_kind>::getTargetTable(const ContextPtr & context) const
 {
-    context->checkAccess(AccessType::SELECT, time_series_storage_id);
+    /// Reading needs SELECT and writing needs INSERT (see `executeImpl`), so finding the target needs one of them.
+    if (!context->getAccess()->isGranted(AccessType::INSERT, time_series_storage_id.database_name, time_series_storage_id.table_name))
+        context->checkAccess(AccessType::SELECT, time_series_storage_id);
     auto time_series_storage = storagePtrToTimeSeries(DatabaseCatalog::instance().getTable(time_series_storage_id, context));
     return time_series_storage->getTargetTable(target_kind, context);
 }
@@ -92,10 +94,16 @@ StoragePtr TableFunctionTimeSeriesTarget<target_kind>::executeImpl(
         ColumnsDescription /* cached_columns */,
         bool is_insert_query) const
 {
-    /// Writing through this function needs INSERT on the TimeSeries table, besides the SELECT every use needs.
+    auto target_table = getTargetTable(context);
+    /// A write needs INSERT on the TimeSeries table and on the target, like `INSERT INTO` the TimeSeries table.
     if (is_insert_query)
+    {
         context->checkAccess(AccessType::INSERT, time_series_storage_id);
-    return getTargetTable(context);
+        context->checkAccess(AccessType::INSERT, target_table->getStorageID());
+    }
+    else
+        context->checkAccess(AccessType::SELECT, time_series_storage_id);
+    return target_table;
 }
 
 template <ViewTarget::Kind target_kind>
