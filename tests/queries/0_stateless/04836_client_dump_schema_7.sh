@@ -342,6 +342,12 @@ CREATE TABLE ${DB}.u_star (x UInt8) ENGINE = URL('http://127.0.0.1:1/*.csv', CSV
 "
 echo "url table with a path wildcard, url-wildcard gate emitted: $(grep -cE "$URL_RE" "$DUMP_FILE")"
 replay_local 'url table with a path wildcard' 'u%'
+# A URL database never reads the url-wildcard gate, whatever its base URL.
+rm -rf "$LOCAL_PATH"
+$CLICKHOUSE_LOCAL --path "$LOCAL_PATH" --query "CREATE DATABASE ${DB} ENGINE = URL('http://127.0.0.1:1/*/')"
+$CLICKHOUSE_LOCAL --path "$LOCAL_PATH" --dump-schema="${DB}" > "$DUMP_FILE" 2>"$ERR_FILE"
+rm -rf "$LOCAL_PATH"
+echo "URL database with a wildcard base URL, url-wildcard gate emitted: $(grep -cE "$URL_RE" "$DUMP_FILE")"
 make_dump "
 CREATE TABLE ${DB}.named_gates (variant UInt32, lowcardinality UInt32, fixedstring UInt32, json UInt32, neighbor UInt32, INDEX i json TYPE minmax) ENGINE = MergeTree ORDER BY variant;
 "

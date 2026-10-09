@@ -105,6 +105,7 @@ url objects without a path wildcard, replayed objects: 3
 url table with a path wildcard, url-wildcard gate emitted: 1
 OK: url table with a path wildcard replayed
 url table with a path wildcard, replayed objects: 1
+URL database with a wildcard base URL, url-wildcard gate emitted: 0
 column named variant, suspicious-variant gate emitted: 0
 columns named lowcardinality, fixedstring, json and neighbor, their gates emitted: 0
 LATERAL materialized view, lateral gate emitted: 1

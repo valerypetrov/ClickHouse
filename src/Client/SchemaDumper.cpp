@@ -3243,8 +3243,9 @@ ReplayGateNeeds collectReplayGateNeeds(
                 needs.ytsaurus_table_function = true;
             else if (equalsCaseInsensitive(function->name, "eval"))
                 needs.eval_table_function = true;
+            /// A `URL` database engine never reads the gate.
             else if ((equalsCaseInsensitive(function->name, "url") || equalsCaseInsensitive(function->name, "urlCluster"))
-                     && urlMayHaveWildcard(*function))
+                     && !(create->getTable().empty() && &node == main_engine) && urlMayHaveWildcard(*function))
                 needs.url_wildcard = true;
         }, unread_select);
 
