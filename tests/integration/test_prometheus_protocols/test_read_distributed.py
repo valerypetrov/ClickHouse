@@ -484,6 +484,35 @@ def test_additional_table_filters_refuse_the_read():
             assert query(LOCAL, "m", user) == unfiltered_local
 
 
+def test_remote_read_fails_closed_under_a_row_policy_or_filter():
+    """Remote read reads the inner tables through the selector too, so it refuses the same restrictions."""
+    read_request = convert_read_request_to_protobuf("^m$", 0, EVALUATION_TIME)
+
+    def remote_read(user=None):
+        credentials = "" if user is None else f"?user={user}&password="
+        return get_response_to_remote_read(
+            node.ip_address, 9093, f"{LOCAL}/read{credentials}", read_request
+        )
+
+    not_implemented = error_code(node, "NOT_IMPLEMENTED")
+    assert remote_read().status_code == requests.codes.ok
+    with restrictive_row_policies():
+        response = remote_read()
+        assert response.headers["X-ClickHouse-Exception-Code"] == not_implemented
+        assert "while a row policy applies to it" in response.text, response.text
+    with filtered_users():
+        for user in WRAPPER_FILTER_USERS:
+            response = remote_read(user)
+            assert (
+                response.headers["X-ClickHouse-Exception-Code"] == not_implemented
+            ), user
+            assert "additional_table_filters entry for it" in response.text, user
+        # `ts_local` is not this table; a literal true restricts nothing.
+        for user in ("prom_filter_shard_local", *UNRESTRICTED_FILTER_USERS):
+            assert remote_read(user).status_code == requests.codes.ok, user
+    assert remote_read().status_code == requests.codes.ok
+
+
 @pytest.mark.parametrize("endpoint, endpoint_name, params", METADATA_ENDPOINTS)
 def test_metadata_endpoints_fail_closed_under_a_row_policy(
     endpoint, endpoint_name, params

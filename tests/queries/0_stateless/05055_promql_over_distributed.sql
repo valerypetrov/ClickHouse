@@ -82,6 +82,13 @@ SELECT (SELECT groupArray(tuple(*)) FROM (SELECT * FROM prometheusQuery(ts_dist,
 SELECT (SELECT groupArray(tuple(*)) FROM (SELECT * FROM prometheusQueryRange(ts_dist, 'm', 100, 140, 10) ORDER BY ALL))
      = (SELECT groupArray(tuple(*)) FROM (SELECT * FROM prometheusQueryRange(ts_all, 'm', 100, 140, 10) ORDER BY ALL));
 
+SELECT '--- the promql dialect reads the Distributed table as well ---';
+SET promql_table = 'ts_dist';
+SET promql_evaluation_time = 140;
+SET dialect = 'promql';
+sum(m);
+SET dialect = 'clickhouse';
+
 -- With '' above each shard reads the table in its own default database; here the database is named.
 SELECT '--- a Distributed table naming its target database explicitly ---';
 CREATE TABLE ts_one_shard AS ts_all ENGINE = Distributed(test_shard_localhost, currentDatabase(), ts_all);
