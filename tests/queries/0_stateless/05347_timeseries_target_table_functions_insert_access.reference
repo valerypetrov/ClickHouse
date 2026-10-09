@@ -1,0 +1,12 @@
+-- with SELECT only:
+timeSeriesSamples: grant INSERT ON db.ts (ACCESS_DENIED)
+timeSeriesTags: grant INSERT ON db.ts (ACCESS_DENIED)
+timeSeriesTagsMinMax: grant INSERT ON db.ts (ACCESS_DENIED)
+timeSeriesMetricFamilies: grant INSERT ON db.ts (ACCESS_DENIED)
+0	0	0	0
+-- with INSERT:
+timeSeriesSamples: OK
+timeSeriesTags: OK
+timeSeriesTagsMinMax: OK
+timeSeriesMetricFamilies: OK
+1	1	1	1
