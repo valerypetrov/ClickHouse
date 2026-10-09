@@ -91,21 +91,56 @@ namespace
         return false;
     }
 
-    /// (SELECT count() FROM left WHERE arrayExists(x -> isNotNull(x), values)) > 0
+    /// arrayExists(x -> isNotNull(x), values)
     /// A row without any value is not a sample, e.g. a row of `requests > 1000` where every value is filtered out.
-    ASTPtr makeNotEmptyCondition(const String & table)
+    ASTPtr makeHasValueCondition()
     {
-        SelectQueryBuilder builder;
-        builder.select_list.push_back(makeASTFunction("count"));
-        builder.from_table = table;
-        builder.where = makeASTFunction(
+        return makeASTFunction(
             "arrayExists",
             makeASTFunction(
                 "lambda",
                 makeASTFunction("tuple", make_intrusive<ASTIdentifier>("x")),
                 makeASTFunction("isNotNull", make_intrusive<ASTIdentifier>("x"))),
             make_intrusive<ASTIdentifier>(ColumnNames::Values));
-        return makeASTFunction("greater", make_intrusive<ASTSubquery>(builder.getSelectQuery()), make_intrusive<ASTLiteral>(0u));
+    }
+
+    /// (SELECT countForEach(values) FROM left) is the number of samples at each step, or [] if there are no rows.
+    /// It's the same subquery everywhere, so it's evaluated once.
+    ASTPtr makeSamplesPerStep(const String & table)
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(makeASTFunction("countForEach", make_intrusive<ASTIdentifier>(ColumnNames::Values)));
+        builder.from_table = table;
+        return make_intrusive<ASTSubquery>(builder.getSelectQuery());
+    }
+
+    /// Keeps the right values only at steps where the left side has a sample, so duplicates are checked only there.
+    /// Prometheus skips a step with an empty left side before it checks the right side for duplicates.
+    String keepRightStepsWithLeftSamples(const String & right, const String & left, ConverterContext & context)
+    {
+        /// arrayResize((SELECT countForEach(values) FROM left), length(values))
+        ASTPtr left_counts = makeASTFunction(
+            "arrayResize", makeSamplesPerStep(left), makeASTFunction("length", make_intrusive<ASTIdentifier>(ColumnNames::Values)));
+
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::Group));
+        builder.select_list.push_back(makeASTFunction(
+            "arrayMap",
+            makeASTFunction(
+                "lambda",
+                makeASTFunction("tuple", make_intrusive<ASTIdentifier>("x"), make_intrusive<ASTIdentifier>("c")),
+                makeASTFunction(
+                    "if",
+                    makeASTFunction("greater", make_intrusive<ASTIdentifier>("c"), make_intrusive<ASTLiteral>(0u)),
+                    make_intrusive<ASTIdentifier>("x"),
+                    make_intrusive<ASTLiteral>(Field{}))),
+            make_intrusive<ASTIdentifier>(ColumnNames::Values),
+            std::move(left_counts)));
+        builder.select_list.back()->setAlias(ColumnNames::Values);
+        builder.from_table = right;
+
+        context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), builder.getSelectQuery(), SQLSubqueryType::TABLE});
+        return context.subqueries.back().name;
     }
 
     /// Dynamic filter pushdown for group_left: adds `right_join_group IN (SELECT join_group FROM left)` to the selector
@@ -113,9 +148,11 @@ namespace
     void pushDownLeftJoinGroups(
         const String & right_grid, const ASTPtr & right_join_group, const String & left, bool check_duplicates, ConverterContext & context)
     {
+        /// SELECT join_group FROM left WHERE arrayExists(x -> isNotNull(x), values)
         SelectQueryBuilder filter_builder;
         filter_builder.select_list.push_back(make_intrusive<ASTIdentifier>(ColumnNames::JoinGroup));
         filter_builder.from_table = left;
+        filter_builder.where = makeHasValueCondition();
         auto filter_subquery = make_intrusive<ASTSubquery>(filter_builder.getSelectQuery());
         ASTPtr filter_condition = makeASTFunction("in", right_join_group->clone(), std::move(filter_subquery));
 
@@ -208,12 +245,13 @@ namespace
                 return;
 
             /// Step 1:
-            /// SELECT timeSeriesIdToGroup(id) AS group FROM <selector> WHERE <left is not empty> GROUP BY id
+            /// SELECT timeSeriesIdToGroup(id) AS group FROM <selector> WHERE arraySum(<left samples per step>) > 0 GROUP BY id
             SelectQueryBuilder groups_builder;
             groups_builder.select_list.push_back(makeASTFunction("timeSeriesIdToGroup", make_intrusive<ASTIdentifier>(ColumnNames::ID)));
             groups_builder.select_list.back()->setAlias(ColumnNames::Group);
             groups_builder.from_table_function = selectors[0]->clone();
-            groups_builder.where = makeNotEmptyCondition(left);
+            groups_builder.where
+                = makeASTFunction("greater", makeASTFunction("arraySum", makeSamplesPerStep(left)), make_intrusive<ASTLiteral>(0u));
             groups_builder.group_by.push_back(make_intrusive<ASTIdentifier>(ColumnNames::ID));
             context.subqueries.emplace_back(SQLSubquery{context.subqueries.size(), groups_builder.getSelectQuery(), SQLSubqueryType::TABLE});
 
@@ -365,7 +403,7 @@ namespace
                    || (!group_right && !drop_metric_name && !left_argument.metric_name_dropped && metric_name_dropped_from_join_group),
                group_right || (group_left && !extra_labels.empty())};
 
-        /// For group_left the right side is checked for duplicates only if the left side isn't empty, as in Prometheus.
+        /// For group_left the right side is checked for duplicates only at steps where the left side isn't empty, as in Prometheus.
         bool check_right_if_left_not_empty = group_left && !is_join_group_unique_on_side[1];
 
         /// For group_left the left join groups are pushed down into the right side.
@@ -391,6 +429,9 @@ namespace
 
             if (!is_left_side && push_down_left_join_groups)
                 pushDownLeftJoinGroups(side, join_group_on_side[1], sides[0], check_right_if_left_not_empty, context);
+
+            if (!is_left_side && check_right_if_left_not_empty)
+                side = keepRightStepsWithLeftSamples(side, sides[0], context);
 
             /// If neither group_left nor group_right is specified then it's one-to-one match, and both sides are "one".
             /// If there is group_left then it's many-to-one match, and the left side is "many".
@@ -483,16 +524,6 @@ namespace
 
                 /// The result of this step is read twice at steps 3-4, so it must be evaluated once.
                 subquery_type = SQLSubqueryType::MATERIALIZED_TABLE;
-            }
-
-            /// WHERE <left is not empty>, see makeNotEmptyCondition()
-            if (!is_left_side && check_right_if_left_not_empty)
-            {
-                ASTPtr left_not_empty = makeNotEmptyCondition(sides[0]);
-                if (builder.where)
-                    builder.where = makeASTFunction("and", builder.where, std::move(left_not_empty));
-                else
-                    builder.where = std::move(left_not_empty);
             }
 
             /// The left side is read again by the right side, so it must be evaluated once.
