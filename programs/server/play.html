@@ -11107,7 +11107,13 @@ function makeEventStreamHandler(targetResultEl, options = {})
         }
         else if (name === 'progress')
         {
-            if (dataLines[0]) targetResultEl.update({ progress: JSON.parse(dataLines[0]) });
+            if (dataLines[0])
+            {
+                const progress = JSON.parse(dataLines[0]);
+                targetResultEl.update({ progress });
+                /// A missing `elapsed_ns` (omitted when zero by the framing progress packet) reads as 0.
+                if (options.progressMeter) options.progressMeter(+progress.elapsed_ns || 0);
+            }
         }
         else if (name === 'log')
         {
@@ -11187,9 +11193,11 @@ function dispatchEventStreamBlock(block, handleEvent)
 /// packets are accumulated into the CELL-OWNED resource state through the same
 /// `accumulateResourceEvents` path the live `readEventStream` uses, so a framed result reopened
 /// after a reload / Back / Forward - where `clearCell` dropped that state - gets its shared
-/// CPU/RAM/peak-RAM line back. The IO rate is sampled on every replayed batch from the replay clock
-/// (`replayTimeSeconds`), offset by the state's last sample time so that the next statement of the
-/// run continues the clock of the previous one. The state is only rebuilt here; the shared progress line is
+/// CPU/RAM/peak-RAM line back. The IO rate is sampled on every replayed batch and on every replayed
+/// `progress` packet, from the later of the replay clock (`replayTimeSeconds`) and the packet's
+/// `elapsed_ns` - so a stream without `profile_events` (`send_profile_events = 0`) keeps its rate too -
+/// offset by the state's last sample time so that the next statement of the run continues the clock
+/// of the previous one. The state is only rebuilt here; the shared progress line is
 /// repainted from it by `syncActiveTabChrome` (which runs after the result is materialized),
 /// exactly as for a cell whose query streamed in the background. As live, it is one aggregate per
 /// run: every replayed statement of the cell accumulates into the same state.
@@ -11201,6 +11209,12 @@ function renderEventStreamText(text, targetResultEl, rawText, base64, format, ce
     const verbatim = (base64 && !isDefaultFormat(format)) ? makeVerbatimPayloadSink(targetResultEl, format) : null;
     if (cell && !cell.resources) cell.resources = freshResourceState();
     const io_clock_base_ns = cell ? cell.resources.io_at_ns : 0;
+    let io_clock_ns = 0;
+    const sampleReplayIo = (clock_ns) =>
+    {
+        io_clock_ns = Math.max(io_clock_ns, clock_ns);
+        sampleIoRate(cell.resources, io_clock_base_ns + io_clock_ns);
+    };
     const handleEvent = makeEventStreamHandler(targetResultEl, {
         rawText,
         format,
@@ -11209,8 +11223,9 @@ function renderEventStreamText(text, targetResultEl, rawText, base64, format, ce
         resourceMeter: cell ? (events, replay_ns) =>
         {
             accumulateResourceEvents(cell.resources, events);
-            sampleIoRate(cell.resources, io_clock_base_ns + replay_ns);
+            sampleReplayIo(replay_ns);
         } : undefined,
+        progressMeter: cell ? (elapsed_ns) => sampleReplayIo(elapsed_ns) : undefined,
         payloadMeter: cell ? (bytes) => accumulateResultPayload(cell.resources, bytes) : undefined,
         onBytes: verbatim ? (bytes) => verbatim.onBytes(bytes) : undefined,
     });

@@ -71,6 +71,7 @@ result payload bytes feed the IO meter: OK
 live result payload bytes accumulate: OK
 replayed result payload bytes accumulate: OK
 replayed IO rate is sampled: OK
+replayed progress samples the IO rate: OK
 remote native result sends feed the IO meter: OK
 result payload alone makes the meter live: OK
 partial exception line is a truncation: OK
