@@ -686,7 +686,7 @@ rm -f "$LOCAL_REMOTE_DUMP_FILE"
 echo '--- a remote() address on another host is not a local dependency ---'
 # A reader of another host has no local edge, so it sorts by name before its source; column lists avoid connecting.
 SERVER_HOST=$($CLICKHOUSE_CLIENT -q "SELECT hostName()")
-# The server's own interface IP and 0.0.0.0 reach the server too, but only the server can tell.
+# The server's own interface IP and 0.0.0.0 reach the server too, but its metadata does not say so: no edge, a warning.
 SERVER_IP=$(getent ahostsv4 "$SERVER_HOST" 2>/dev/null | awk '$1 !~ /^127\./ {print $1; exit}')
 SERVER_IP=${SERVER_IP:-0.0.0.0}
 $CLICKHOUSE_CLIENT -mq "
@@ -712,6 +712,8 @@ if $CLICKHOUSE_CLIENT --dump-schema="${DB}" > "$OTHER_HOST_DUMP_FILE" 2>"$ERR_FI
             echo "${reader}: no local edge"
         fi
     done
+    grep -o "^Warning: ${DB}\.[a-z_]* reads ${DB}\.zzz_remote_src, which is in this dump" "$ERR_FILE" \
+        | sed "s/^Warning: ${DB}\.\([a-z_]*\) .*/warned: \1/"
 else
     echo "FAIL: dump rejected: $(cat "$ERR_FILE")"
 fi
@@ -727,8 +729,8 @@ DROP TABLE ${DB}.zzz_remote_src;
 "
 rm -f "$OTHER_HOST_DUMP_FILE"
 
-echo '--- a remote() address the server cannot be asked about refuses the dump ---'
-# Without READ ON REMOTE the server cannot say whether 0.0.0.0 is itself, so the dump must not guess.
+echo '--- the dump never sends a remote() query to place an address ---'
+# A user without READ ON REMOTE dumps an address it cannot place too: it only gets a warning.
 NOREMOTE_USER="${DB}_noremote_user"
 $CLICKHOUSE_CLIENT -mq "
 CREATE TABLE ${DB}.zzz_remote_src (id UInt64) ENGINE = MergeTree ORDER BY id;
@@ -739,10 +741,15 @@ GRANT ALL ON *.* TO ${NOREMOTE_USER};
 REVOKE READ ON REMOTE FROM ${NOREMOTE_USER};
 "
 if $CLICKHOUSE_CLIENT --user "$NOREMOTE_USER" --dump-schema="${DB}" > /dev/null 2>"$ERR_FILE"; then
-    echo 'FAIL: dump succeeded although the server could not be asked about the address'
+    echo "unplaced remote() address warned: $(grep -cF "Warning: ${DB}.aaa_remote_any_ip reads ${DB}.zzz_remote_src, which is in this dump, through remote('0.0.0.0:${CLICKHOUSE_PORT_TCP}', ...)" "$ERR_FILE")"
 else
-    echo "unaskable remote() address refused: $(grep -c "Cannot tell whether remote address 0.0.0.0:${CLICKHOUSE_PORT_TCP} is the connected server" "$ERR_FILE")"
+    echo "FAIL: dump rejected: $(cat "$ERR_FILE")"
 fi
+# The server opens a connection to a remote() address only to run a query through it.
+$CLICKHOUSE_CLIENT -q "SYSTEM FLUSH LOGS query_log"
+echo "remote() queries sent by the dumps: $($CLICKHOUSE_CLIENT -q "
+    SELECT count() FROM system.query_log
+    WHERE current_database = currentDatabase() AND event_date >= yesterday() AND query_kind = 'Select' AND query ILIKE '%FROM remote%'")"
 $CLICKHOUSE_CLIENT -mq "
 DROP USER ${NOREMOTE_USER};
 DROP TABLE ${DB}.aaa_remote_any_ip;

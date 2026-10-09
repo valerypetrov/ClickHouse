@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Tags: no-darwin
 
-# A same-server remote() reader that logs in with its own user is probed with that login, not the default user.
-# A private server lets the default user need a password, which the shared test server cannot do.
+# --dump-schema places a remote() address from the server's metadata only, so it never logs in with a stored login.
+# A private server records every login in session_log, and 0.0.0.0 reaches it, so any attempt would show there.
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
@@ -22,7 +22,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The probe compares an address's port with tcpPort(), so the server needs a fixed one.
+# The dump compares an address's port with tcpPort(), so the server needs a fixed one.
 port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 
 cat > "$work/config.xml" <<EOF
@@ -39,6 +39,10 @@ cat > "$work/config.xml" <<EOF
     <tmp_path>$work/data/tmp/</tmp_path>
     <user_files_path>$work/data/user_files/</user_files_path>
     <display_secrets_in_show_and_select>1</display_secrets_in_show_and_select>
+    <session_log>
+        <database>system</database>
+        <table>session_log</table>
+    </session_log>
     <users>
         <default>
             <password>default_secret</password>
@@ -80,45 +84,49 @@ if ! client -q "SELECT 1" > /dev/null 2>&1; then
     exit 1
 fi
 
-# 0.0.0.0 is not one of the server's own addresses, so the server reaches it over the network and logs in.
+# 0.0.0.0 is not one of the server's own addresses: a read through it goes over the network and logs in.
 client --multiquery --query "
 CREATE DATABASE creds;
 CREATE TABLE creds.zzz_src (id UInt64) ENGINE = MergeTree ORDER BY id;
-CREATE VIEW creds.aaa_login_reader AS SELECT * FROM remote('0.0.0.0:${port}', 'creds', 'zzz_src', 'reader', 'reader_secret');
+CREATE VIEW creds.aaa_login_reader (id UInt64) AS SELECT * FROM remote('0.0.0.0:${port}', 'creds', 'zzz_src', 'reader', 'reader_secret');
 CREATE NAMED COLLECTION nc_self AS host = '0.0.0.0', port = ${port}, user = 'reader', password = 'reader_secret', db = 'creds', table = 'zzz_src';
-CREATE VIEW creds.aab_collection_reader AS SELECT * FROM remote(nc_self);
+CREATE VIEW creds.aab_collection_reader (id UInt64) AS SELECT * FROM remote(nc_self);
+CREATE DATABASE masked;
+CREATE TABLE masked.zzz_src (id UInt64) ENGINE = MergeTree ORDER BY id;
+CREATE VIEW masked.aaa_login_reader (id UInt64) AS SELECT * FROM remote('0.0.0.0:${port}', 'masked', 'zzz_src', 'reader', 'reader_secret');
 "
+since=$(client -q "SELECT now64(6)")
+logins() {
+    client -q "SYSTEM FLUSH LOGS session_log"
+    client -q "SELECT count() FROM system.session_log WHERE event_time_microseconds > toDateTime64('${since}', 6) AND user IN ($1)"
+}
 
-echo '--- the probe logs in as the remote() call does ---'
-if client -q "SELECT count() FROM remote('0.0.0.0:${port}', system.one)" 2>&1 | grep -q 'AUTHENTICATION_FAILED\|REQUIRED_PASSWORD'; then
-    echo 'OK: remote() refuses the default user'
-else
-    echo 'FAIL: remote() does not refuse the default user'
-fi
+echo '--- the dump never logs in with a remote() call stored login ---'
 dump_file="$work/dump.sql"
 if client --format_display_secrets_in_show_and_select=1 --dump-schema=creds > "$dump_file" 2>"$work/err"; then
     src_line=$(grep -n "CREATE TABLE creds\.zzz_src" "$dump_file" | head -1 | cut -d: -f1)
     for reader in aaa_login_reader aab_collection_reader; do
         reader_line=$(grep -n "CREATE VIEW creds\.${reader} " "$dump_file" | head -1 | cut -d: -f1)
-        if [ -n "$src_line" ] && [ -n "$reader_line" ] && [ "$src_line" -lt "$reader_line" ]; then
-            echo "OK: source dumped before ${reader}"
+        if [ -z "$src_line" ] || [ -z "$reader_line" ]; then
+            echo "FAIL: ${reader} or its source missing (src=$src_line reader=$reader_line)"
+        elif [ "$src_line" -lt "$reader_line" ]; then
+            echo "${reader}: local edge"
         else
-            echo "FAIL: ${reader} missing or dumped before its source (src=$src_line reader=$reader_line)"
+            echo "${reader}: no local edge"
         fi
     done
+    echo "readers warned: $(grep -c "^Warning: creds\.[a-z_]* reads creds\.zzz_src, which is in this dump" "$work/err")"
 else
     echo "FAIL: dump rejected: $(cat "$work/err")"
 fi
-
-echo '--- a masked password the address needs refuses the dump ---'
-# Without the format setting the stored password reads back as [HIDDEN], and the default user proves nothing.
-client --multiquery --query "
-CREATE DATABASE masked;
-CREATE TABLE masked.zzz_src (id UInt64) ENGINE = MergeTree ORDER BY id;
-CREATE VIEW masked.aaa_login_reader AS SELECT * FROM remote('0.0.0.0:${port}', 'masked', 'zzz_src', 'reader', 'reader_secret');
-"
+# Without the format setting the stored password reads back as [HIDDEN]; the dump needs no login anyway.
 if client --dump-schema=masked > "$dump_file" 2>"$work/err"; then
-    echo 'FAIL: dump succeeded although the login of the reader was masked'
+    echo "masked reader warned: $(grep -cF "Warning: masked.aaa_login_reader reads masked.zzz_src, which is in this dump, through remote('0.0.0.0:${port}', ...)" "$work/err")"
 else
-    echo "masked login refused: $(grep -c 'cannot read the login the call uses' "$work/err")"
+    echo "FAIL: dump rejected: $(cat "$work/err")"
 fi
+echo "logins by the stored or default user during the dumps: $(logins "'reader', 'default'")"
+
+echo '--- a remote() read through 0.0.0.0 does log in as the stored user ---'
+client -q "SELECT count() FROM remote('0.0.0.0:${port}', 'system', 'one', 'reader', 'reader_secret')"
+echo "logins by the stored user: $(logins "'reader'" | sed 's/^[1-9][0-9]*$/some/')"

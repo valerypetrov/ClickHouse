@@ -101,13 +101,6 @@ namespace ErrorCodes
     extern const int CANNOT_OPEN_FILE;
     extern const int CANNOT_WRITE_TO_FILE;
     extern const int NOT_IMPLEMENTED;
-    extern const int NO_REMOTE_SHARD_AVAILABLE;
-    extern const int ALL_CONNECTION_TRIES_FAILED;
-    extern const int NETWORK_ERROR;
-    extern const int SOCKET_TIMEOUT;
-    extern const int DNS_ERROR;
-    extern const int AUTHENTICATION_FAILED;
-    extern const int REQUIRED_PASSWORD;
     extern const int ACCESS_DENIED;
 }
 
@@ -349,6 +342,8 @@ struct TableInfo
     std::vector<String> unresolved_references;
     /// Database-less references that an omitted database whose tables could not be listed may also hold.
     std::vector<String> unchecked_references;
+    /// (database, table, call) for a table in the dump read through a `remote*` address not shown to be this server.
+    std::vector<std::tuple<String, String, String>> unproven_remote_reads;
     NamedCollectionDependencies named_collections;
     /// Materialized view only: replay may reach a check that `allow_materialized_view_with_bad_select` relaxes.
     bool needs_bad_select_gate = false;
@@ -368,6 +363,7 @@ struct RawTableRow
     std::vector<std::pair<String, String>> dependents; /// views/dictionaries that read from this table
     std::vector<String> unresolved_references;
     std::vector<String> unchecked_references;
+    std::vector<std::tuple<String, String, String>> unproven_remote_reads;
     NamedCollectionDependencies named_collections;
     String target_database; /// materialized view only: its `TO` target, explicit or implicit
     String target_table;
@@ -522,15 +518,6 @@ struct ClusterNames
     std::set<String> local;
 };
 
-/// The user and password a `remote*` call logs in with.
-struct RemoteLogin
-{
-    String user = "default";
-    String password;
-    /// The password is masked as [HIDDEN] for this session or is not a constant, so it cannot be replayed.
-    bool unreadable = false;
-};
-
 /// Cluster and server metadata used to classify distributed references as local dependencies.
 struct ClusterLocality
 {
@@ -550,9 +537,6 @@ struct ClusterLocality
     std::function<const std::map<String, std::map<String, String>> &()> named_collections;
     /// Server hostnames and local cluster replica addresses considered local dependencies.
     std::function<const std::set<String> &()> local_hostnames;
-    /// Asks the server whether a `remote*` address reaches the server itself, logging in as the call does.
-    /// Not set for clickhouse-local.
-    std::function<bool(const String & address, bool secure, const RemoteLogin & login)> address_is_this_server;
     /// For mirroring the server's constant folding of `cluster*` name/table arguments.
     ContextPtr context;
 };
@@ -667,46 +651,55 @@ bool isRemoteFunctionName(const String & name)
     return equalsCaseInsensitive(name, "remote") || equalsCaseInsensitive(name, "remoteSecure");
 }
 
-/// Whether one replica of a `remote*` pattern is the server itself, on its port: a loopback address or name it reports
-/// as its own, or else what the server answers about the address, so its interface IPs and other aliases count too.
-bool remoteAddressIsLocal(const String & address, bool secure, const RemoteLogin & login, const ClusterLocality & clusters)
+/// Whether a distributed read reaches this server. `Unknown` is an address the server's metadata does not show
+/// to be its own: it is read as remote, and a target in the dump only warns. Ordered so `std::max` combines replicas.
+enum class Locality
+{
+    Remote,
+    Unknown,
+    Local,
+};
+
+/// Whether one replica of a `remote*` pattern is the server itself, on its port. Only passive metadata counts:
+/// a loopback address, a name the server reports as its own, or a local cluster replica address. No host is contacted.
+Locality remoteAddressLocality(const String & address, bool secure, const ClusterLocality & clusters)
 {
     bool has_explicit_port = address.starts_with('[') ? address.contains("]:") : address.contains(':');
     if (has_explicit_port && clusters.treat_local_port_as_remote)
-        return false;
+        return Locality::Remote;
     String host = address;
     if (has_explicit_port)
     {
         auto [parsed_host, port] = parseAddress(address, 0);
         if (port != (secure ? clusters.tcp_port_secure() : clusters.tcp_port))
-            return false;
+            return Locality::Remote;
         host = parsed_host;
     }
     if (host.starts_with('[') && host.ends_with(']'))
         host = host.substr(1, host.size() - 2);
     if (equalsCaseInsensitive(host, "localhost"))
-        return true;
+        return Locality::Local;
     /// `isLocalAddress` decides a loopback address by its value alone, so the client answers it the way the server does.
     if (Poco::Net::IPAddress ip; Poco::Net::IPAddress::tryParse(host, ip) && ip.isLoopback() && isLocalAddress(ip))
-        return true;
+        return Locality::Local;
     if (clusters.local_hostnames)
     {
         for (const auto & local_host : clusters.local_hostnames())
             if (equalsCaseInsensitive(host, local_host))
-                return true;
+                return Locality::Local;
     }
-    return clusters.address_is_this_server && clusters.address_is_this_server(address, secure, login);
+    return Locality::Unknown;
 }
 
-/// Whether any replica of a `remote*` address pattern is read without a connection.
-bool remoteDescriptionHasLocalReplica(const String & pattern, bool secure, const RemoteLogin & login, const ClusterLocality & clusters)
+/// The most local replica of a `remote*` address pattern.
+Locality remoteDescriptionLocality(const String & pattern, bool secure, const ClusterLocality & clusters)
 {
     size_t max_addresses = clusters.context->getSettingsRef()[Setting::table_function_remote_max_addresses];
+    Locality result = Locality::Remote;
     for (const auto & shard : parseRemoteDescription(pattern, 0, pattern.size(), ',', max_addresses))
         for (const auto & replica : parseRemoteDescription(shard, 0, shard.size(), '|', max_addresses))
-            if (remoteAddressIsLocal(replica, secure, login, clusters))
-                return true;
-    return false;
+            result = std::max(result, remoteAddressLocality(replica, secure, clusters));
+    return result;
 }
 
 /// What a `remote*` named-collection call names, once the call's overrides are applied.
@@ -717,7 +710,6 @@ struct RemoteCollectionTarget
     String table;
     /// `remote(nc, database = mysql(...))`: the target is a table function, so there is no table edge.
     bool target_is_table_function = false;
-    RemoteLogin login;
 };
 
 /// The collection a `remote*` identifier first argument names: `parseRemoteFunctionArguments` tries
@@ -800,19 +792,10 @@ RemoteCollectionTarget resolveRemoteNamedCollection(
         String key;
         if (!tryGetIdentifierNameInto(equals->arguments->children[0], key))
             continue;
-        /// The sharding key names no table and reaches no address.
-        if (key == "sharding_key")
+        /// Credentials and the sharding key name no table and reach no address.
+        if (key == "user" || key == "username" || key == "password" || key == "sharding_key")
             continue;
         const ASTPtr & value = equals->arguments->children[1];
-        if (key == "user" || key == "username" || key == "password")
-        {
-            /// Credentials name no table either; an unreadable one only stops the locality probe from replaying it.
-            if (auto text = tryReadNamedCollectionValue(value, clusters))
-                values[key] = *text;
-            else
-                target.login.unreadable = true;
-            continue;
-        }
         if (const auto * value_function = value->as<ASTFunction>();
             value_function && TableFunctionFactory::instance().isTableFunctionName(value_function->name))
         {
@@ -854,88 +837,12 @@ RemoteCollectionTarget resolveRemoteNamedCollection(
     else
         target.database = "default";
     target.table = get("table");
-    /// `username` wins over `user`, the way `getAnyOrDefault` reads them.
-    if (values.contains("username"))
-        target.login.user = get("username");
-    else if (values.contains("user"))
-        target.login.user = get("user");
-    target.login.password = get("password");
-    if (target.login.user == "[HIDDEN]" || target.login.password == "[HIDDEN]")
-        target.login.unreadable = true;
     return target;
-}
-
-/// Reads the user and password of a positional `remote*` call the way `parseRemoteFunctionArguments` does.
-RemoteLogin readRemotePositionalLogin(const ASTFunction & function, const ClusterLocality & clusters)
-{
-    ASTs args;
-    for (const auto & argument : function.arguments->children)
-        if (!argument->as<ASTSetQuery>())
-            args.push_back(argument);
-
-    auto string_literal = [](const ASTPtr & node) -> std::optional<String>
-    {
-        const auto * literal = node->as<ASTLiteral>();
-        if (literal && literal->value.getType() == Field::Types::String)
-            return literal->value.safeGet<String>();
-        return std::nullopt;
-    };
-
-    RemoteLogin login;
-    size_t arg_num = 1;
-    if (arg_num < args.size())
-    {
-        const auto * table_function = args[arg_num]->as<ASTFunction>();
-        if (table_function && TableFunctionFactory::instance().isTableFunctionName(table_function->name))
-            ++arg_num;
-        else
-        {
-            /// `db.table` is one argument and `db, table` two, so the login starts after either.
-            std::optional<String> database;
-            if (const auto * identifier = args[arg_num]->as<ASTIdentifier>())
-                database = identifier->name();
-            else
-                database = tryReadNamedCollectionValue(args[arg_num], clusters);
-            if (!database)
-            {
-                login.unreadable = true;
-                return login;
-            }
-            auto qualified = QualifiedTableName::tryParseFromString(*database);
-            arg_num += (qualified && !qualified->database.empty()) ? 1 : 2;
-        }
-    }
-
-    bool sharding_key = false;
-    bool password_read = false;
-    if (arg_num < args.size())
-    {
-        if (auto user = string_literal(args[arg_num]))
-        {
-            login.user = *user;
-            ++arg_num;
-        }
-        else if (String name; arg_num + 1 < args.size() && string_literal(args[arg_num + 1])
-                 && tryGetIdentifierNameInto(args[arg_num], name))
-        {
-            login.user = name;
-            login.password = *string_literal(args[arg_num + 1]);
-            password_read = true;
-        }
-        else
-            sharding_key = true;
-    }
-    if (!sharding_key && !password_read && arg_num < args.size())
-        if (auto password = string_literal(args[arg_num]))
-            login.password = *password;
-
-    login.unreadable = login.password == "[HIDDEN]";
-    return login;
 }
 
 /// Whether a `remote*` call has a replica the server reads without a connection, the way
 /// `parseRemoteFunctionArguments` builds its ad-hoc cluster from the first argument.
-bool remoteFunctionHasLocalReplica(const ASTFunction & function, const ClusterLocality & clusters)
+Locality remoteFunctionLocality(const ASTFunction & function, const ClusterLocality & clusters)
 {
     const auto & first = function.arguments->children.at(0);
     bool secure = equalsCaseInsensitive(function.name, "remoteSecure");
@@ -945,27 +852,27 @@ bool remoteFunctionHasLocalReplica(const ASTFunction & function, const ClusterLo
         if (const auto * collection = tryGetRemoteNamedCollection(function, name, clusters))
         {
             auto target = resolveRemoteNamedCollection(function, name, *collection, clusters);
-            return remoteDescriptionHasLocalReplica(target.addresses, secure, target.login, clusters);
+            return remoteDescriptionLocality(target.addresses, secure, clusters);
         }
-        return clusters.names().local.contains(name);
+        return clusters.names().local.contains(name) ? Locality::Local : Locality::Remote;
     }
     const auto * literal = first->as<ASTLiteral>();
     if (!literal || literal->value.getType() != Field::Types::String)
-        return false;
-    return remoteDescriptionHasLocalReplica(
-        literal->value.safeGet<String>(), secure, readRemotePositionalLogin(function, clusters), clusters);
+        return Locality::Remote;
+    return remoteDescriptionLocality(literal->value.safeGet<String>(), secure, clusters);
 }
 
 /// Whether a `cluster*`/`remote*` call reads its table argument on this instance.
-bool distributedFunctionReadsLocally(const ASTFunction & function, const ClusterLocality & clusters)
+Locality distributedFunctionLocality(const ASTFunction & function, const ClusterLocality & clusters)
 {
     if (!function.arguments || function.arguments->children.empty())
-        return false;
+        return Locality::Remote;
     if (isClusterTableFunctionName(function.name))
-        return function.arguments->children.size() >= 2
-            && clusters.names().local.contains(resolveClusterOfFunction(function, clusters));
+        return function.arguments->children.size() >= 2 && clusters.names().local.contains(resolveClusterOfFunction(function, clusters))
+            ? Locality::Local
+            : Locality::Remote;
     /// A `remote*` call needs no second argument: a named collection can carry the table itself.
-    return remoteFunctionHasLocalReplica(function, clusters);
+    return remoteFunctionLocality(function, clusters);
 }
 
 /// Returns the argument subtree that cannot contain local dependencies for non-local `remote`/`cluster`.
@@ -978,7 +885,7 @@ const IAST * remoteFunctionArgumentsToSkip(const IAST & node, const ClusterLocal
     {
         /// Nothing a non-local call names is read on this instance, so the whole argument list goes:
         /// callers compare against direct children, and an argument node is not one.
-        if (function->arguments->children.size() >= 2 && !distributedFunctionReadsLocally(*function, clusters))
+        if (function->arguments->children.size() >= 2 && distributedFunctionLocality(*function, clusters) != Locality::Local)
             return function->arguments.get();
     }
     return nullptr;
@@ -1077,6 +984,8 @@ struct TableReference
     String database;
     String table;
     ReferenceKind kind = ReferenceKind::Any;
+    /// Set when read through a `remote*` address not shown to be this server: no edge, only a warning.
+    String remote_via = {};
 };
 
 /// Whether an object with this `system.tables.engine` can be what such a reference resolved to.
@@ -1284,7 +1193,7 @@ void collectFunctionArgumentReferences(
         {
             /// A call with local replicas reads the named table locally; no current-database
             /// fallback here, a database-less first argument names the database for argument 2.
-            if (distributedFunctionReadsLocally(*function, clusters))
+            auto read_target = [&](std::vector<TableReference> & targets)
             {
                 const auto & args = function->arguments->children;
                 /// A named-collection call carries no positional database/table arguments: the edge
@@ -1299,7 +1208,7 @@ void collectFunctionArgumentReferences(
                             auto target = resolveRemoteNamedCollection(
                                 *function, collection_name, *collection, clusters);
                             if (!target.target_is_table_function && !target.table.empty())
-                                out.push_back({target.database, target.table});
+                                targets.push_back({target.database, target.table});
                             return;
                         }
                     }
@@ -1382,7 +1291,27 @@ void collectFunctionArgumentReferences(
                             function->formatForErrorMessage());
                 }
                 if (dependency)
-                    out.push_back({dependency->first, dependency->second});
+                    targets.push_back({dependency->first, dependency->second});
+            };
+            const Locality locality = distributedFunctionLocality(*function, clusters);
+            if (locality == Locality::Local)
+                read_target(out);
+            else if (locality == Locality::Unknown)
+            {
+                std::vector<TableReference> targets;
+                try
+                {
+                    read_target(targets);
+                }
+                catch (const Exception &) // NOLINT(bugprone-empty-catch)
+                {
+                    /// The call reads as remote, so a target the dump cannot name is skipped, not refused.
+                }
+                for (auto & target : targets)
+                {
+                    target.remote_via = function->name + "(" + function->arguments->children[0]->formatForErrorMessage() + ", ...)";
+                    out.push_back(std::move(target));
+                }
             }
         }
         else if (functionIsDictGet(function->name) || functionIsJoinGet(function->name) || equalsCaseInsensitive(function->name, "dictionary"))
@@ -1914,8 +1843,16 @@ std::vector<TableInfo> resolveTables(
         std::vector<TableReference> references;
         collectFunctionArgumentReferences(*engine, clusters, references);
         for (const auto & reference : references)
-            if (std::pair(reference.database, reference.table) != std::pair(row.database, row.name))
+        {
+            if (!reference.remote_via.empty())
+            {
+                const std::pair<String, String> target{reference.database, reference.table};
+                if (known_tables.contains(target) || implicit_inner.contains(target))
+                    row.unproven_remote_reads.emplace_back(reference.database, reference.table, reference.remote_via);
+            }
+            else if (std::pair(reference.database, reference.table) != std::pair(row.database, row.name))
                 row.loading_dependencies.emplace_back(reference.database, reference.table);
+        }
     }
 
     /// Scan only CREATE slots whose runtime parsers accept named collections.
@@ -1976,6 +1913,12 @@ std::vector<TableInfo> resolveTables(
         auto add_dependency = [&](const TableReference & candidate)
         {
             std::pair<String, String> resolved{candidate.database, candidate.table};
+            if (!candidate.remote_via.empty())
+            {
+                if (known_tables.contains(resolved) || implicit_inner.contains(resolved))
+                    row.unproven_remote_reads.emplace_back(resolved.first, resolved.second, candidate.remote_via);
+                return;
+            }
             if (resolved.first.empty())
             {
                 /// Replay resolves unqualified names under `USE <owner database>`; reject ambiguous rebinding.
@@ -2085,6 +2028,7 @@ std::vector<TableInfo> resolveTables(
         table.dependencies = std::move(row.loading_dependencies);
         table.unresolved_references = std::move(row.unresolved_references);
         table.unchecked_references = std::move(row.unchecked_references);
+        table.unproven_remote_reads = std::move(row.unproven_remote_reads);
         table.named_collections = std::move(row.named_collections);
         /// A dependency on an omitted helper table is remapped onto the owning object - which is what
         /// creates the helper on replay - so the edge survives instead of dangling on a skipped row.
@@ -2161,54 +2105,6 @@ std::vector<TableInfo> fetchTables(
         return *cached;
     };
     clusters.treat_local_port_as_remote = context->getApplicationType() == Context::ApplicationType::LOCAL;
-    if (!clusters.treat_local_port_as_remote)
-        clusters.address_is_this_server
-            = [&, own_uuid = String{}, cached = std::map<std::tuple<String, bool, String, String, bool>, bool>{}](
-                  const String & address, bool secure, const RemoteLogin & login) mutable
-        {
-            const auto key = std::tuple(address, secure, login.user, login.password, login.unreadable);
-            if (auto it = cached.find(key); it != cached.end())
-                return it->second;
-            if (own_uuid.empty())
-                own_uuid = fetchStringColumn(
-                    connection, timeouts, client_info, "SELECT toString(serverUUID())", context->getSettingsRef()).at(0);
-            /// The probe logs in as the call does; a password it cannot read falls back to remote()'s default user.
-            const RemoteLogin probe_login = login.unreadable ? RemoteLogin{} : login;
-            bool is_this_server = false;
-            try
-            {
-                /// The server reads its own address in place without a login, and connects to any other one.
-                const String query = String("SELECT toString(serverUUID()) FROM ") + (secure ? "remoteSecure(" : "remote(")
-                    + quoteString(address) + ", 'system', 'one', " + quoteString(probe_login.user) + ", "
-                    + quoteString(probe_login.password) + ") SETTINGS prefer_localhost_replica = 1";
-                const auto uuids = fetchStringColumn(connection, timeouts, client_info, query, context->getSettingsRef());
-                is_this_server = !uuids.empty() && uuids.front() == own_uuid;
-            }
-            catch (const Exception & e)
-            {
-                /// These errors mean the server went over the network and found no server.
-                static const std::set<int> unreachable = {ErrorCodes::NO_REMOTE_SHARD_AVAILABLE,
-                    ErrorCodes::ALL_CONNECTION_TRIES_FAILED, ErrorCodes::NETWORK_ERROR, ErrorCodes::SOCKET_TIMEOUT,
-                    ErrorCodes::DNS_ERROR};
-                /// A refused call login means the call cannot read there either; a refused default login proves nothing.
-                const bool login_refused = e.code() == ErrorCodes::AUTHENTICATION_FAILED || e.code() == ErrorCodes::REQUIRED_PASSWORD;
-                if (login_refused && login.unreadable)
-                    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-                        "Cannot tell whether remote address {} is the connected server for --dump-schema, "
-                        "so a dependency on its tables may be missed: the address refuses the default user, and this "
-                        "session cannot read the login the call uses (its password is shown as [HIDDEN], or an argument "
-                        "is computed). Re-run from a session allowed to display secrets, with "
-                        "format_display_secrets_in_show_and_select = 1",
-                        address);
-                if (!unreachable.contains(e.code()) && !login_refused)
-                    throw Exception(ErrorCodes::NOT_IMPLEMENTED,
-                        "Cannot tell whether remote address {} is the connected server for --dump-schema, "
-                        "so a dependency on its tables may be missed: asking the server failed: {}",
-                        address, e.message());
-            }
-            cached.emplace(key, is_this_server);
-            return is_this_server;
-        };
     using NamedCollectionMap = std::map<String, std::map<String, String>>;
     clusters.named_collections
         = [&, cached = std::optional<NamedCollectionMap>{}]() mutable -> const NamedCollectionMap &
@@ -2271,8 +2167,8 @@ std::vector<TableInfo> fetchTables(
             }
             catch (const Exception & e)
             {
-                /// Without a grant on system.clusters, `address_is_this_server` still asks the server about each address.
-                if (e.code() != ErrorCodes::ACCESS_DENIED || !clusters.address_is_this_server)
+                /// Without a grant on system.clusters, an address only a cluster could show local stays unknown.
+                if (e.code() != ErrorCodes::ACCESS_DENIED)
                     throw;
             }
         }
@@ -2526,6 +2422,17 @@ void reportDependenciesOutsideDumpSet(
             << " without a database, and the tables of omitted external database(s) " << unlisted
             << " could not be listed to rule out the same name there; if one has it, the object may have been created "
             << "reading that one, while replay reads the one in " << backQuoteIfNeed(database) << ".\n";
+
+    /// A proxy row is listed too: readers through it would also need the table first.
+    std::set<std::tuple<String, String, String, String, String>> unproven;
+    for (const auto & table : tables)
+        for (const auto & [database, name, call] : table.unproven_remote_reads)
+            unproven.emplace(table.database, table.name, database, name, call);
+    for (const auto & [database, name, read_database, read_name, call] : unproven)
+        err << "Warning: " << backQuoteIfNeed(database) << "." << backQuoteIfNeed(name) << " reads " << backQuoteIfNeed(read_database)
+            << "." << backQuoteIfNeed(read_name) << ", which is in this dump, through " << call
+            << ", and the server's metadata does not show that address to be this server, so the dump treats it as another "
+            << "server and does not order the reader after it.\n";
 
     if (!missing.empty() || !unresolved.empty() || !collections.empty() || !database_collections.empty() || !unconfirmed_collections.empty()
         || !unconfirmed_database_collections.empty())

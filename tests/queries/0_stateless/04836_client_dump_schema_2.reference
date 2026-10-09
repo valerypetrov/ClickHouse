@@ -106,10 +106,16 @@ aab_remote_host: no local edge
 aac_remote_secure: no local edge
 aad_remote_loopback: local edge
 aae_remote_own_host: local edge
-aaf_remote_own_ip: local edge
-aag_remote_any_ip: local edge
---- a remote() address the server cannot be asked about refuses the dump ---
-unaskable remote() address refused: 1
+aaf_remote_own_ip: no local edge
+aag_remote_any_ip: no local edge
+warned: aaa_remote_ip
+warned: aab_remote_host
+warned: aac_remote_secure
+warned: aaf_remote_own_ip
+warned: aag_remote_any_ip
+--- the dump never sends a remote() query to place an address ---
+unplaced remote() address warned: 1
+remote() queries sent by the dumps: 0
 --- a cluster() argument reading the session database is refused, not rebound ---
 session-database cluster() argument refused: 1
 --- a cluster() argument reading the session user is refused too ---
