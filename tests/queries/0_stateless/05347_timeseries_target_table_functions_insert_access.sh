@@ -3,6 +3,8 @@
 # Writing through a target table function of a TimeSeries table writes into that table,
 # so it needs the INSERT grant on it, the same as `INSERT INTO` the table.
 
+CLICKHOUSE_CLIENT_SERVER_LOGS_LEVEL=none
+
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
 . "$CUR_DIR"/../shell_config.sh
@@ -28,7 +30,7 @@ function try_inserts()
         "timeSeriesMetricFamilies(${db}.ts) (metric_family, type) VALUES ('m', 'gauge')"
     do
         error=$(${CLICKHOUSE_CLIENT} --user "${user}" --async_insert 0 -q "INSERT INTO FUNCTION ${insert}" 2>&1 \
-            | grep -oE "grant INSERT ON ${db}\.ts|\([A-Z_]+\)" | sed "s/${db}/db/" | paste -sd ' ' -)
+            | grep -m1 -oE "grant INSERT ON ${db}\.ts|\([A-Z_]+\)" | sed "s/${db}/db/" | paste -sd ' ' -)
         echo "${insert%%(*}: ${error:-OK}"
     done
     ${CLICKHOUSE_CLIENT} -q "
