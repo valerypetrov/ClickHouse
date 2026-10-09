@@ -177,6 +177,13 @@ SELECT 'NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])', count() FROM tab_nulla
 SELECT 'NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])', count() FROM tab_nullable WHERE NOT hasAllTokenLike(msg, ['charg%', '%ed']) SETTINGS use_skip_indexes_on_data_read = 0;
 SELECT 'NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])', count() FROM tab_nullable WHERE NOT hasAllTokenLike(msg, ['charg%', '%ed']) SETTINGS text_index_like_max_matched_tokens = 1;
 SELECT 'NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])', count() FROM tab_nullable WHERE NOT hasAllTokenLike(msg, ['charg%', '%ed']) SETTINGS text_index_like_max_postings_to_read = 0;
+-- A NULL row stays NULL inside `isNull` and `ifNull`.
+SELECT 'isNull(hasAnyTokenLike(msg, \'charg%\'))', count() FROM tab_nullable WHERE isNull(hasAnyTokenLike(msg, 'charg%'));
+SELECT 'isNull(hasAnyTokenLike(msg, \'charg%\'))', count() FROM tab_nullable WHERE isNull(hasAnyTokenLike(msg, 'charg%')) SETTINGS use_skip_indexes = 0;
+SELECT 'ifNull(hasAnyTokenLike(msg, \'charg%\'), 1)', count() FROM tab_nullable WHERE ifNull(hasAnyTokenLike(msg, 'charg%'), 1);
+SELECT 'ifNull(hasAnyTokenLike(msg, \'charg%\'), 1)', count() FROM tab_nullable WHERE ifNull(hasAnyTokenLike(msg, 'charg%'), 1) SETTINGS use_skip_indexes = 0;
+SELECT 'isNull(hasAllTokenLike(msg, [\'charg%\', \'%ed\']))', count() FROM tab_nullable WHERE isNull(hasAllTokenLike(msg, ['charg%', '%ed']));
+SELECT 'isNull(hasAllTokenLike(msg, [\'charg%\', \'%ed\']))', count() FROM tab_nullable WHERE isNull(hasAllTokenLike(msg, ['charg%', '%ed'])) SETTINGS use_skip_indexes = 0;
 
 DROP TABLE tab_nullable;
 
