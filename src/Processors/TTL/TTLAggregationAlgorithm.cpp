@@ -301,7 +301,12 @@ void TTLAggregationAlgorithm::execute(Block & block)
         {
             bool where_filter_passed = !where_column_after_aggregation || where_column_after_aggregation->getBool(i);
             if (where_filter_passed)
+            {
                 new_ttl_info.update(timestamps[i]);
+                /// SET can move an aggregated row's TTL into the future, and then the rule is not retired.
+                if (!isTTLExpired(timestamps[i]))
+                    new_ttl_info.ttl_finished = false;
+            }
         }
     }
 }

@@ -450,3 +450,54 @@ ${CLICKHOUSE_CLIENT} -q "
       AND partition_id NOT LIKE 'patch-%';
 "
 ${CLICKHOUSE_CLIENT} -q "DROP TABLE t_ttl_patch_group_by_zero;"
+
+# Case 25: the patch expires every row, and SET moves the rolled-up TTL 20 seconds ahead.
+# The entry must stay unfinished, so the roll-up runs again once that deadline arrives.
+echo "-- Case 25: a SET that moves the TTL forward keeps the GROUP BY entry schedulable"
+
+${CLICKHOUSE_CLIENT} -q "
+    CREATE TABLE t_ttl_patch_group_by_set_forward
+    (
+        id UInt64,
+        event_time DateTime,
+        value UInt64
+    )
+    ENGINE = MergeTree()
+    ORDER BY id
+    TTL event_time GROUP BY id SET value = max(value), event_time = max(event_time) + INTERVAL 20 SECOND
+    SETTINGS
+        -- As in Case 22, 0 keeps the OPTIMIZE the only merge; it is raised once that part exists.
+        max_number_of_merges_with_ttl_in_pool = 0,
+        merge_with_ttl_timeout = 0,
+        apply_patches_on_merge = 1,
+        enable_block_number_column = 1,
+        enable_block_offset_column = 1,
+        min_bytes_for_wide_part = 1;
+
+    SYSTEM STOP MERGES t_ttl_patch_group_by_set_forward;
+
+    INSERT INTO t_ttl_patch_group_by_set_forward SELECT number % 10, now() + INTERVAL 2 DAY, number FROM numbers(100);
+
+    UPDATE t_ttl_patch_group_by_set_forward SET event_time = now() - INTERVAL 1 SECOND WHERE TRUE
+    SETTINGS enable_lightweight_update = 1, mutations_sync = 2;
+
+    SYSTEM START MERGES t_ttl_patch_group_by_set_forward;
+    OPTIMIZE TABLE t_ttl_patch_group_by_set_forward FINAL;
+"
+
+# One row per key, with its TTL in the future.
+${CLICKHOUSE_CLIENT} -q "SELECT count(), min(event_time) > now() FROM t_ttl_patch_group_by_set_forward;"
+
+first_max=$(${CLICKHOUSE_CLIENT} -q "SELECT toUnixTimestamp(max(event_time)) FROM t_ttl_patch_group_by_set_forward;")
+wait_seconds=$(( first_max - $(date +%s) + 1 ))
+[[ "$wait_seconds" -gt 0 ]] && sleep "$wait_seconds"
+${CLICKHOUSE_CLIENT} -q "ALTER TABLE t_ttl_patch_group_by_set_forward MODIFY SETTING max_number_of_merges_with_ttl_in_pool = 100;"
+
+# Once due, the roll-up runs again and moves the TTL another 20 seconds ahead.
+for _ in $(seq 1 120); do
+    last_max=$(${CLICKHOUSE_CLIENT} -q "SELECT toUnixTimestamp(max(event_time)) FROM t_ttl_patch_group_by_set_forward;")
+    [[ "$last_max" -gt "$first_max" ]] && break
+    sleep 1
+done
+echo "rolled up again after the deadline: $([[ "$last_max" -gt "$first_max" ]] && echo 1 || echo 0)"
+${CLICKHOUSE_CLIENT} -q "DROP TABLE t_ttl_patch_group_by_set_forward;"

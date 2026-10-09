@@ -20,3 +20,6 @@ rolled up after the unblocked patched merge: 1
 -- Case 24: a patch zeroing every row's TTL clears the GROUP BY bound
 100
 1
+-- Case 25: a SET that moves the TTL forward keeps the GROUP BY entry schedulable
+10	1
+rolled up again after the deadline: 1
