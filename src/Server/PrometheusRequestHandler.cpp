@@ -445,8 +445,8 @@ public:
     }
 };
 
-/// Handles the read-only query and metadata endpoints of the Prometheus HTTP API
-/// (/api/v1/query, /api/v1/query_range, /api/v1/series, /api/v1/labels, /api/v1/label/<name>/values, /api/v1/metadata).
+/// Handles the read-only query and metadata endpoints of the Prometheus HTTP API (/api/v1/query, query_range, series, labels,
+/// label/<name>/values, metadata) and the always-empty rules, alerts and query_exemplars endpoints.
 class PrometheusRequestHandler::QueryImpl : public ImplWithContext
 {
 public:
@@ -778,8 +778,8 @@ private:
         if (path.ends_with("/read"))
             return read_impl;
 
-        /// All other /api/v1/* endpoints (query, query_range, series, labels, label/<name>/values, metadata)
-        /// are served by the Query implementation, which itself returns 404 for unknown paths.
+        /// All other /api/v1/* endpoints (query, query_range, series, labels, label/<name>/values, metadata, rules, alerts,
+        /// query_exemplars) are served by the Query implementation, which itself returns 404 for unknown paths.
         return query_impl;
     }
 

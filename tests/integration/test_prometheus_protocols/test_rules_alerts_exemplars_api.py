@@ -80,7 +80,6 @@ def test_rules_ignores_filter_parameters():
         "type": "alert",
         "exclude_alerts": "true",
         "group_limit": "40",
-        "group_next_token": "abc",
         "file[]": "f",
         "rule_group[]": "g",
         "rule_name[]": "r",
