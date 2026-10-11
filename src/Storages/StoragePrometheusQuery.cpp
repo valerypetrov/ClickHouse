@@ -205,7 +205,7 @@ void StoragePrometheusQuery::readImpl(
     PrometheusQueryToSQL::Converter converter{config.promql_query, evaluation_settings};
     ASTPtr select_query = converter.getSQL();
 
-    LOG_TRACE(log, "Will execute query:\n{}", select_query->formatForLogging());
+    LOG_DEBUG(log, "Will execute query:\n{}", select_query->formatForLogging());
     auto options = SelectQueryOptions(QueryProcessingStage::Complete, 0, false, query_info.settings_limit_offset_done);
 
     /// Isolate the settings required by generated PromQL from the outer query.

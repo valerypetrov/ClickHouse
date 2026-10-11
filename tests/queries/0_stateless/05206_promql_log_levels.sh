@@ -2,8 +2,8 @@
 # Tags: no-fasttest
 # no-fasttest: PromQL needs ANTLR4, which is disabled in the fast-test build.
 
-# Per-request lines of the Prometheus handlers and the PromQL of prometheusQuery() are logged at the
-# debug level and the SQL generated for the PromQL at the trace level, not at the information level.
+# Per-request lines of the Prometheus handlers and the PromQL and SQL of prometheusQuery() are logged at
+# the debug level, not at the information level.
 
 CUR_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
