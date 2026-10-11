@@ -150,7 +150,7 @@ namespace
             if (next_token->getType() == METRIC_NAME)
             {
                 const auto token_text = next_token->getText();
-                if (token_text == "min_of" || token_text == "max_of")
+                if (token_text == "min_of" || token_text == "max_of" || token_text == "info")
                     static_cast<antlr4::WritableToken *>(next_token.get())->setType(FUNCTION);
             }
 
@@ -235,6 +235,9 @@ namespace
         UInt32 time_scale;
         ErrorListener & error_listener;
         std::vector<std::unique_ptr<Node>> nodes;
+
+        /// Prometheus allows matchers of the label selector of info() to match the empty string.
+        bool in_info_label_selector = false;
 
         Node * addNode(std::unique_ptr<Node> new_node)
         {
@@ -587,7 +590,7 @@ namespace
                 }
             }
 
-            if (!validateSelectorHasNonEmptyMatcher(matchers, getStartPos(ctx)))
+            if (!in_info_label_selector && !validateSelectorHasNonEmptyMatcher(matchers, getStartPos(ctx)))
                 return nullptr;
 
             new_node->matchers = std::move(matchers);
@@ -1086,7 +1089,9 @@ namespace
             antlr4_grammars::PromQLParser::ParameterContext * parameter_ctx = nullptr;
             for (size_t i = 0; (parameter_ctx = ctx->parameter(i)) != nullptr; ++i)
             {
+                in_info_label_selector = (i == 1) && ctx->FUNCTION() && (getText(ctx->FUNCTION()) == "info");
                 Node * argument = makeNode(parameter_ctx);
+                in_info_label_selector = false;
                 if (!argument)
                 {
                     chassert(error_listener.hasError());

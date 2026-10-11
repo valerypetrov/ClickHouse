@@ -156,9 +156,18 @@ SQLQueryPiece fromSelector(const PrometheusQueryTree::InstantSelector * instant_
 
 SQLQueryPiece fromSelectorSampleTimestamps(const PrometheusQueryTree::InstantSelector * instant_selector_node, ConverterContext & context)
 {
-    auto instant_selector_text = instant_selector_node->toString(*context.promql_tree);
+    return fromSelectorSampleTimestamps(instant_selector_node, instant_selector_node->toString(*context.promql_tree), {}, context);
+}
+
+
+SQLQueryPiece fromSelectorSampleTimestamps(
+    const Node * node,
+    const String & instant_selector_text,
+    std::optional<std::pair<TimestampType, TimestampType>> time_bounds,
+    ConverterContext & context)
+{
     auto range_selector = fromRangeSelector(
-        instant_selector_text, instant_selector_node, /* filter_stale_markers = */ false, context);
+        instant_selector_text, node, /* filter_stale_markers = */ false, context);
 
     if (range_selector.store_method == StoreMethod::RAW_DATA)
     {
@@ -179,6 +188,16 @@ SQLQueryPiece fromSelectorSampleTimestamps(const PrometheusQueryTree::InstantSel
         value->setAlias(ColumnNames::Value);
         builder.select_list.push_back(std::move(value));
 
+        if (time_bounds)
+        {
+            builder.where = makeASTFunction(
+                "and",
+                makeASTFunction("greaterOrEquals", make_intrusive<ASTIdentifier>(ColumnNames::Timestamp),
+                                timeSeriesTimestampToAST(time_bounds->first, context.result_timestamp_type)),
+                makeASTFunction("lessOrEquals", make_intrusive<ASTIdentifier>(ColumnNames::Timestamp),
+                                timeSeriesTimestampToAST(time_bounds->second, context.result_timestamp_type)));
+        }
+
         context.subqueries.emplace_back(
             context.subqueries.size(),
             std::move(range_selector.select_query),
@@ -189,7 +208,7 @@ SQLQueryPiece fromSelectorSampleTimestamps(const PrometheusQueryTree::InstantSel
     }
 
     auto vector_grid = applyFunctionOverRange(
-        instant_selector_node, "last_over_time", {std::move(range_selector)}, context);
+        node, "last_over_time", {std::move(range_selector)}, context);
     return replaceStaleMarkersWithNulls(std::move(vector_grid), context);
 }
 

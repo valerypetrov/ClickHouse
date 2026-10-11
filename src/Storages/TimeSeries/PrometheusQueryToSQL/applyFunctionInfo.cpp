@@ -1,0 +1,575 @@
+#include <Storages/TimeSeries/PrometheusQueryToSQL/applyFunctionInfo.h>
+
+#include <Common/Exception.h>
+#include <Common/re2.h>
+#include <Parsers/ASTFunction.h>
+#include <Parsers/ASTIdentifier.h>
+#include <Parsers/ASTLiteral.h>
+#include <Parsers/Prometheus/stepsInTimeSeriesRange.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/ConverterContext.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/SelectQueryBuilder.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/fromSelector.h>
+#include <Storages/TimeSeries/PrometheusQueryToSQL/toVectorGrid.h>
+
+#include <unordered_set>
+
+
+namespace DB::ErrorCodes
+{
+    extern const int CANNOT_EXECUTE_PROMQL_QUERY;
+}
+
+
+namespace DB::PrometheusQueryToSQL
+{
+
+namespace
+{
+    using Matcher = PrometheusQueryTree::Matcher;
+    using MatcherList = PrometheusQueryTree::MatcherList;
+    using MatcherType = PrometheusQueryTree::MatcherType;
+
+    constexpr const char * kTargetInfo = "target_info";
+
+    ASTPtr col(const String & name)
+    {
+        return make_intrusive<ASTIdentifier>(name);
+    }
+
+    ASTPtr lit(Field value)
+    {
+        return make_intrusive<ASTLiteral>(std::move(value));
+    }
+
+    ASTPtr lambda(const String & argument, ASTPtr body)
+    {
+        return makeASTFunction("lambda", makeASTFunction("tuple", col(argument)), std::move(body));
+    }
+
+    ASTPtr makeFunction(const String & name, ASTs arguments)
+    {
+        auto function = makeASTFunction(name);
+        function->arguments->children = std::move(arguments);
+        return function;
+    }
+
+    /// The labels Prometheus joins info series by.
+    ASTPtr identifyingLabels()
+    {
+        return lit(Array{"instance", "job"});
+    }
+
+    ASTPtr labelNames(ASTPtr group)
+    {
+        return makeASTFunction(
+            "arrayMap", lambda("x", makeASTFunction("tupleElement", col("x"), lit(1u))), makeASTFunction("timeSeriesGroupToTags", group));
+    }
+
+    /// values[step + 1]
+    ASTPtr valueAtStep(ASTPtr step)
+    {
+        return makeASTFunction("arrayElement", col(ColumnNames::Values), makeASTFunction("plus", std::move(step), lit(1u)));
+    }
+
+    /// arrayJoin(arrayFilter(i -> isNotNull(values[i + 1]), range(length(values)))): one row for each step with a value.
+    ASTPtr stepsWithValues()
+    {
+        return makeASTFunction(
+            "arrayJoin",
+            makeASTFunction(
+                "arrayFilter",
+                lambda("i", makeASTFunction("isNotNull", valueAtStep(col("i")))),
+                makeASTFunction("range", makeASTFunction("length", col(ColumnNames::Values)))));
+    }
+
+    ASTPtr matchesAST(const Matcher & matcher, ASTPtr value)
+    {
+        switch (matcher.matcher_type)
+        {
+            case MatcherType::EQ: return makeASTFunction("equals", value, lit(matcher.label_value));
+            case MatcherType::NE: return makeASTFunction("notEquals", value, lit(matcher.label_value));
+            case MatcherType::RE: return makeASTFunction("match", value, lit("^(?:" + matcher.label_value + ")$"));
+            case MatcherType::NRE: return makeASTFunction("not", makeASTFunction("match", value, lit("^(?:" + matcher.label_value + ")$")));
+        }
+        UNREACHABLE();
+    }
+
+    bool matchesEmptyString(const Matcher & matcher)
+    {
+        switch (matcher.matcher_type)
+        {
+            case MatcherType::EQ: return matcher.label_value.empty();
+            case MatcherType::NE: return !matcher.label_value.empty();
+            case MatcherType::RE:
+            case MatcherType::NRE:
+            {
+                re2::RE2::Options options;
+                options.set_log_errors(false);
+                re2::RE2 regexp(matcher.label_value, options);
+                return re2::RE2::FullMatch("", regexp) == (matcher.matcher_type == MatcherType::RE);
+            }
+        }
+        UNREACHABLE();
+    }
+
+    /// Whether Prometheus evaluates `node` only once, at the first step, see preprocessExprHelper() in Prometheus.
+    bool isStepInvariant(const Node * node)
+    {
+        switch (node->node_type)
+        {
+            case NodeType::Scalar:
+            case NodeType::StringLiteral:
+                return true;
+            case NodeType::InstantSelector:
+            case NodeType::RangeSelector:
+            case NodeType::Subquery:
+                return false;
+            case NodeType::Offset:
+                return static_cast<const PrometheusQueryTree::Offset *>(node)->hasAtModifier() || isStepInvariant(node->children.at(0));
+            case NodeType::AggregationOperator:
+                return isStepInvariant(node->children.back());
+            case NodeType::Function:
+            {
+                static const std::unordered_set<std::string_view> unsafe_functions = {
+                    "days_in_month", "day_of_month", "day_of_week", "day_of_year", "hour", "minute", "month", "year",
+                    "predict_linear", "time", "timestamp"};
+                if (unsafe_functions.contains(static_cast<const PrometheusQueryTree::Function *>(node)->function_name))
+                    return false;
+                return std::ranges::all_of(node->children, isStepInvariant);
+            }
+            case NodeType::UnaryOperator:
+            case NodeType::BinaryOperator:
+                return std::ranges::all_of(node->children, isStepInvariant);
+        }
+        UNREACHABLE();
+    }
+
+    /// Returns the first instant selector in `node` in the order Prometheus inspects the nodes.
+    const Node * findFirstSelector(const Node * node)
+    {
+        if (node->node_type == NodeType::InstantSelector)
+            return node;
+        for (const auto * child : node->children)
+        {
+            if (const auto * selector = findFirstSelector(child))
+                return selector;
+        }
+        return nullptr;
+    }
+
+    /// Prometheus 3.5 reads the info series only up to the @ and offset modifiers of the first selector in `v`.
+    std::optional<std::pair<TimestampType, TimestampType>> getInfoTimeBounds(
+        const PrometheusQueryTree::Function * function_node, const ConverterContext & context)
+    {
+        const auto * modifiers = findFirstSelector(function_node->getArguments().at(0));
+        if (modifiers && modifiers->parent && modifiers->parent->node_type == NodeType::RangeSelector)
+            modifiers = modifiers->parent;
+        if (!modifiers || !modifiers->parent || modifiers->parent->node_type != NodeType::Offset)
+            return {};
+        const auto & offset_node = static_cast<const PrometheusQueryTree::Offset &>(*modifiers->parent);
+
+        const auto & info_range = context.node_range_getter.get(function_node);
+        const auto & query_range = context.node_range_getter.get(context.promql_tree->getRoot());
+        TimestampType start = info_range.start_time;
+        TimestampType end = info_range.end_time;
+        switch (offset_node.at_modifier)
+        {
+            case PrometheusQueryTree::Offset::AtModifier::None: break;
+            case PrometheusQueryTree::Offset::AtModifier::Timestamp: start = end = *offset_node.at_timestamp; break;
+            case PrometheusQueryTree::Offset::AtModifier::Start: start = end = query_range.start_time; break;
+            case PrometheusQueryTree::Offset::AtModifier::End: start = end = query_range.end_time; break;
+        }
+        if (offset_node.offset_value)
+        {
+            start -= *offset_node.offset_value;
+            end -= *offset_node.offset_value;
+        }
+        return std::make_pair(start - info_range.window + 1, end);
+    }
+
+    String addSubquery(ASTPtr query, SQLSubqueryType type, ConverterContext & context)
+    {
+        context.subqueries.emplace_back(context.subqueries.size(), std::move(query), type);
+        return context.subqueries.back().name;
+    }
+}
+
+
+bool isFunctionInfo(std::string_view function_name)
+{
+    return function_name == "info";
+}
+
+
+SQLQueryPiece applyFunctionInfo(
+    const PrometheusQueryTree::Function * function_node, std::vector<SQLQueryPiece> && arguments, ConverterContext & context)
+{
+    if (arguments.empty() || arguments.size() > 2)
+    {
+        throw Exception(ErrorCodes::CANNOT_EXECUTE_PROMQL_QUERY,
+                        "Function 'info' expects 1 or 2 arguments, but was called with {} arguments", arguments.size());
+    }
+
+    if (arguments[0].type != ResultType::INSTANT_VECTOR)
+    {
+        throw Exception(ErrorCodes::CANNOT_EXECUTE_PROMQL_QUERY,
+                        "Function 'info' expects the first argument of type {}, but expression {} has type {}",
+                        ResultType::INSTANT_VECTOR, getPromQLText(arguments[0], context), arguments[0].type);
+    }
+
+    /// The second argument isn't evaluated, only its matchers are used.
+    MatcherList matchers;
+    if (arguments.size() == 2)
+    {
+        const auto * selector = function_node->getArguments().at(1);
+        while (selector->node_type == NodeType::Offset)
+            selector = selector->children.at(0);
+        if (selector->node_type != NodeType::InstantSelector)
+            throw Exception(ErrorCodes::CANNOT_EXECUTE_PROMQL_QUERY, "Function 'info' expects label selectors in the second argument");
+        matchers = static_cast<const PrometheusQueryTree::InstantSelector *>(selector)->matchers;
+    }
+
+    /// Without the second argument only `target_info` is used, and its series aren't enriched.
+    MatcherList name_matchers;
+    if (arguments.size() == 1)
+        name_matchers.push_back(Matcher{kMetricName, kTargetInfo, MatcherType::EQ});
+
+    Array data_label_names;
+    bool drop_without_data_labels = false;
+    /// Prometheus 3.5 also drops by the metric name matchers if no series of `v` has identifying labels.
+    bool drop_without_identifying_labels = false;
+    for (const auto & matcher : matchers)
+    {
+        if (matcher.label_name == kMetricName)
+        {
+            name_matchers.push_back(matcher);
+            drop_without_identifying_labels |= !matchesEmptyString(matcher);
+            continue;
+        }
+        if (std::find(data_label_names.begin(), data_label_names.end(), Field{matcher.label_name}) == data_label_names.end())
+            data_label_names.push_back(matcher.label_name);
+        drop_without_data_labels |= !matchesEmptyString(matcher);
+    }
+
+    PrometheusQueryTree::InstantSelector info_selector;
+    info_selector.matchers = matchers;
+    if (std::ranges::none_of(matchers, [](const Matcher & matcher) { return matcher.label_name == kMetricName; }))
+        info_selector.matchers.insert(info_selector.matchers.begin(), Matcher{kMetricName, kTargetInfo, MatcherType::EQ});
+
+    auto base = toVectorGrid(std::move(arguments[0]), context);
+    auto info = fromSelectorSampleTimestamps(
+        function_node, info_selector.toString(*context.promql_tree), getInfoTimeBounds(function_node, context), context);
+    if (base.store_method == StoreMethod::EMPTY || info.store_method == StoreMethod::EMPTY)
+        return SQLQueryPiece{function_node, ResultType::INSTANT_VECTOR, StoreMethod::EMPTY};
+
+    /// Step 1: one row for each sample of `v`, `idx` is the number of its step starting from 0.
+    /// SELECT group, timeSeriesRemoveAllTagsExcept(group, ['instance', 'job']) AS join_group, <name matches> AS ignored,
+    ///        arrayJoin(<steps with values>) AS idx, assumeNotNull(values[idx + 1]) AS value
+    /// FROM <base>
+    String samples;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col(ColumnNames::Group));
+        builder.select_list.push_back(makeASTFunction("timeSeriesRemoveAllTagsExcept", col(ColumnNames::Group), identifyingLabels()));
+        builder.select_list.back()->setAlias("join_group");
+
+        ASTs name_matches;
+        for (const auto & matcher : name_matchers)
+            name_matches.push_back(matchesAST(
+                matcher,
+                makeASTFunction("ifNull", makeASTFunction("timeSeriesExtractTag", col(ColumnNames::Group), lit(kMetricName)), lit(""))));
+        if (name_matches.empty())
+            builder.select_list.push_back(lit(false));
+        else if (name_matches.size() == 1)
+            builder.select_list.push_back(name_matches[0]);
+        else
+            builder.select_list.push_back(makeFunction("or", std::move(name_matches)));
+        builder.select_list.back()->setAlias("ignored");
+
+        builder.select_list.push_back(stepsWithValues());
+        builder.select_list.back()->setAlias("idx");
+        builder.select_list.push_back(makeASTFunction("assumeNotNull", valueAtStep(col("idx"))));
+        builder.select_list.back()->setAlias("value");
+
+        builder.from_table = addSubquery(std::move(base.select_query), SQLSubqueryType::TABLE, context);
+        samples = addSubquery(builder.getSelectQuery(), SQLSubqueryType::MATERIALIZED_TABLE, context);
+    }
+
+    /// Step 2: Prometheus selects only info series with all identifying labels found on the series of `v`,
+    /// so only the series of `v` with all of them can be enriched.
+    /// (SELECT length(groupUniqArrayArray(<label names of join_group>)) FROM step1 WHERE NOT ignored)
+    String num_identifying_labels;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(makeASTFunction("length", makeASTFunction("groupUniqArrayArray", labelNames(col("join_group")))));
+        builder.from_table = samples;
+        builder.where = makeASTFunction("not", col("ignored"));
+        num_identifying_labels = addSubquery(builder.getSelectQuery(), SQLSubqueryType::SCALAR, context);
+    }
+
+    /// Step 3: one row for each sample of the info series, its value is the timestamp of the sample.
+    /// SELECT group AS info_group, timeSeriesRemoveAllTagsExcept(group, ['instance', 'job']) AS info_join_group,
+    ///        ifNull(timeSeriesExtractTag(group, '__name__'), '') AS info_name,
+    ///        arrayJoin(<steps with values>) AS info_idx, assumeNotNull(values[info_idx + 1]) AS info_timestamp
+    /// FROM <info>
+    String info_samples;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col(ColumnNames::Group));
+        builder.select_list.back()->setAlias("info_group");
+        builder.select_list.push_back(makeASTFunction("timeSeriesRemoveAllTagsExcept", col(ColumnNames::Group), identifyingLabels()));
+        builder.select_list.back()->setAlias("info_join_group");
+        builder.select_list.push_back(
+            makeASTFunction("ifNull", makeASTFunction("timeSeriesExtractTag", col(ColumnNames::Group), lit(kMetricName)), lit("")));
+        builder.select_list.back()->setAlias("info_name");
+        builder.select_list.push_back(stepsWithValues());
+        builder.select_list.back()->setAlias("info_idx");
+        builder.select_list.push_back(makeASTFunction("assumeNotNull", valueAtStep(col("info_idx"))));
+        builder.select_list.back()->setAlias("info_timestamp");
+        builder.from_table = addSubquery(std::move(info.select_query), SQLSubqueryType::TABLE, context);
+
+        /// SELECT group, arrayResize([], <count_of_time_steps>, values[1]) AS values FROM <info>
+        if (arguments.size() == 1 && isStepInvariant(function_node->getArguments().at(0)))
+        {
+            SelectQueryBuilder first_step_builder;
+            first_step_builder.select_list.push_back(col(ColumnNames::Group));
+            first_step_builder.select_list.push_back(makeASTFunction(
+                "arrayResize",
+                lit(Array{}),
+                lit(stepsInTimeSeriesRange(info.start_time, info.end_time, info.step)),
+                makeASTFunction("arrayElement", col(ColumnNames::Values), lit(1u))));
+            first_step_builder.select_list.back()->setAlias(ColumnNames::Values);
+            first_step_builder.from_table = builder.from_table;
+            builder.from_table = addSubquery(first_step_builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+        }
+
+        info_samples = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 4: the identifying labels and the steps of the samples which can be enriched.
+    /// SELECT join_group AS base_join_group, idx AS base_idx
+    /// FROM step1
+    /// WHERE NOT ignored AND join_group != 0 AND length(timeSeriesGroupToTags(join_group)) = step2
+    /// GROUP BY join_group, idx
+    String base_steps;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col("join_group"));
+        builder.select_list.back()->setAlias("base_join_group");
+        builder.select_list.push_back(col("idx"));
+        builder.select_list.back()->setAlias("base_idx");
+        builder.from_table = samples;
+        builder.where = makeASTFunction(
+            "and",
+            makeASTFunction("not", col("ignored")),
+            makeASTFunction("notEquals", col("join_group"), lit(0u)),
+            makeASTFunction(
+                "equals",
+                makeASTFunction("length", makeASTFunction("timeSeriesGroupToTags", col("join_group"))),
+                col(num_identifying_labels)));
+        builder.group_by = {col("join_group"), col("idx")};
+        base_steps = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 5: the newest series of each info metric at each step, two of them with the same timestamp is an error.
+    /// SELECT info_join_group, info_idx, argMax(info_group, info_timestamp) AS newest_info_group
+    /// FROM step3 JOIN step4 ON info_join_group = base_join_group AND info_idx = base_idx
+    /// GROUP BY info_join_group, info_idx, info_name
+    /// HAVING throwIf(countEqual(groupArray(info_timestamp), max(info_timestamp)) > 1, '...') = 0
+    String newest_info;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col("info_join_group"));
+        builder.select_list.push_back(col("info_idx"));
+        builder.select_list.push_back(makeASTFunction("argMax", col("info_group"), col("info_timestamp")));
+        builder.select_list.back()->setAlias("newest_info_group");
+
+        builder.from_table = info_samples;
+        builder.join_table = base_steps;
+        builder.join_on = makeASTFunction(
+            "and",
+            makeASTFunction("equals", col("info_join_group"), col("base_join_group")),
+            makeASTFunction("equals", col("info_idx"), col("base_idx")));
+
+        builder.group_by = {col("info_join_group"), col("info_idx"), col("info_name")};
+
+        builder.having = makeASTFunction(
+            "equals",
+            makeASTFunction(
+                "throwIf",
+                makeASTFunction(
+                    "greater",
+                    makeASTFunction(
+                        "countEqual", makeASTFunction("groupArray", col("info_timestamp")), makeASTFunction("max", col("info_timestamp"))),
+                    lit(1u)),
+                lit("found duplicate series for info metric")),
+            lit(0u));
+
+        newest_info = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 6: the info series used at each step.
+    /// SELECT info_join_group AS chosen_join_group, info_idx AS chosen_idx, arraySort(groupArray(newest_info_group)) AS info_groups
+    /// FROM step5
+    /// GROUP BY info_join_group, info_idx
+    String chosen_info;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col("info_join_group"));
+        builder.select_list.back()->setAlias("chosen_join_group");
+        builder.select_list.push_back(col("info_idx"));
+        builder.select_list.back()->setAlias("chosen_idx");
+        builder.select_list.push_back(makeASTFunction("arraySort", makeASTFunction("groupArray", col("newest_info_group"))));
+        builder.select_list.back()->setAlias("info_groups");
+        builder.from_table = newest_info;
+        builder.group_by = {col("info_join_group"), col("info_idx")};
+        chosen_info = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 7: splits each series of `v` into parts enriched by the same info series.
+    /// SELECT group, ignored, info_groups, groupArray(idx) AS idxs, groupArray(value) AS step_values
+    /// FROM step1 LEFT ANY JOIN step6 ON join_group = chosen_join_group AND idx = chosen_idx
+    /// GROUP BY group, ignored, info_groups
+    String series_parts;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(col(ColumnNames::Group));
+        builder.select_list.push_back(col("ignored"));
+        builder.select_list.push_back(col("info_groups"));
+        builder.select_list.push_back(makeASTFunction("groupArray", col("idx")));
+        builder.select_list.back()->setAlias("idxs");
+        builder.select_list.push_back(makeASTFunction("groupArray", col("value")));
+        builder.select_list.back()->setAlias("step_values");
+
+        builder.from_table = samples;
+        builder.join_kind = JoinKind::Left;
+        builder.join_strictness = JoinStrictness::Any;
+        builder.join_table = chosen_info;
+        builder.join_on = makeASTFunction(
+            "and",
+            makeASTFunction("equals", col("join_group"), col("chosen_join_group")),
+            makeASTFunction("equals", col("idx"), col("chosen_idx")));
+
+        builder.group_by = {col(ColumnNames::Group), col("ignored"), col("info_groups")};
+        series_parts = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 8: adds the data labels, two info metrics with different values of a label is an error.
+    /// SELECT if(empty(info_tags), group, timeSeriesTagsToGroup(arrayConcat(timeSeriesGroupToTags(group), info_tags))) AS new_group,
+    ///        idxs, step_values,
+    ///        if(ignored, [], arrayDistinct(arrayFilter(t -> <data label not found in group>,
+    ///                                                  arrayFlatten(arrayMap(g -> timeSeriesGroupToTags(g), info_groups))))) AS info_tags
+    /// FROM step7
+    /// WHERE throwIf(length(arrayDistinct(arrayMap(t -> t.1, info_tags))) != length(info_tags), 'conflicting label') = 0
+    ///       [AND (ignored OR notEmpty(info_tags))]
+    String enriched_parts;
+    {
+        SelectQueryBuilder builder;
+        builder.select_list.push_back(makeASTFunction(
+            "if",
+            makeASTFunction("empty", col("info_tags")),
+            col(ColumnNames::Group),
+            makeASTFunction(
+                "timeSeriesTagsToGroup",
+                makeASTFunction("arrayConcat", makeASTFunction("timeSeriesGroupToTags", col(ColumnNames::Group)), col("info_tags")))));
+        builder.select_list.back()->setAlias(ColumnNames::NewGroup);
+        builder.select_list.push_back(col("idxs"));
+        builder.select_list.push_back(col("step_values"));
+
+        ASTPtr tag_name = makeASTFunction("tupleElement", col("t"), lit(1u));
+        ASTs keep_tag;
+        keep_tag.push_back(makeASTFunction("notEquals", tag_name, lit(kMetricName)));
+        keep_tag.push_back(makeASTFunction("not", makeASTFunction("has", labelNames(col(ColumnNames::Group)), tag_name)));
+        if (!data_label_names.empty())
+            keep_tag.push_back(makeASTFunction("has", lit(data_label_names), tag_name));
+
+        builder.select_list.push_back(makeASTFunction(
+            "if",
+            col("ignored"),
+            lit(Array{}),
+            makeASTFunction(
+                "arrayDistinct",
+                makeASTFunction(
+                    "arrayFilter",
+                    lambda("t", makeFunction("and", std::move(keep_tag))),
+                    makeASTFunction(
+                        "arrayFlatten",
+                        makeASTFunction("arrayMap", lambda("g", makeASTFunction("timeSeriesGroupToTags", col("g"))), col("info_groups")))))));
+        builder.select_list.back()->setAlias("info_tags");
+
+        builder.from_table = series_parts;
+
+        ASTs conditions;
+        conditions.push_back(makeASTFunction(
+            "equals",
+            makeASTFunction(
+                "throwIf",
+                makeASTFunction(
+                    "notEquals",
+                    makeASTFunction(
+                        "length",
+                        makeASTFunction(
+                            "arrayDistinct",
+                            makeASTFunction("arrayMap", lambda("t", makeASTFunction("tupleElement", col("t"), lit(1u))), col("info_tags")))),
+                    makeASTFunction("length", col("info_tags"))),
+                lit("conflicting label")),
+            lit(0u)));
+
+        /// A series without data labels is dropped if a data label matcher doesn't match the empty string.
+        if (drop_without_data_labels)
+            conditions.push_back(makeASTFunction("or", col("ignored"), makeASTFunction("notEmpty", col("info_tags"))));
+        else if (drop_without_identifying_labels)
+            conditions.push_back(makeASTFunction(
+                "or",
+                col("ignored"),
+                makeASTFunction("notEmpty", col("info_tags")),
+                makeASTFunction("notEquals", col(num_identifying_labels), lit(0u))));
+
+        builder.where = (conditions.size() == 1) ? conditions[0] : makeFunction("and", std::move(conditions));
+        enriched_parts = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
+    }
+
+    /// Step 9: collects the parts of each new series.
+    /// SELECT new_group AS group,
+    ///        arrayMap((v, p) -> if(p, v, NULL), groupArrayInsertAtArray(0., <count_of_time_steps>)(step_values, idxs),
+    ///                 groupArrayInsertAtArray(0, <count_of_time_steps>)(arrayMap(i -> 1, idxs), idxs)) AS values
+    /// FROM step8
+    /// GROUP BY new_group
+    /// HAVING timeSeriesThrowDuplicateSeriesIf(sum(length(idxs)) != uniqExactArray(idxs), new_group) = 0
+    const UInt64 num_steps = stepsInTimeSeriesRange(base.start_time, base.end_time, base.step);
+    SelectQueryBuilder builder;
+    builder.select_list.push_back(col(ColumnNames::NewGroup));
+    builder.select_list.back()->setAlias(ColumnNames::Group);
+    builder.select_list.push_back(makeASTFunction(
+        "arrayMap",
+        makeASTFunction(
+            "lambda",
+            makeASTFunction("tuple", col("v"), col("p")),
+            makeASTFunction("if", col("p"), col("v"), lit(Field{}))),
+        addParametersToAggregateFunction(
+            makeASTFunction("groupArrayInsertAtArray", col("step_values"), col("idxs")), lit(Float64{0}), lit(num_steps)),
+        addParametersToAggregateFunction(
+            makeASTFunction("groupArrayInsertAtArray", makeASTFunction("arrayMap", lambda("i", lit(1u)), col("idxs")), col("idxs")),
+            lit(0u),
+            lit(num_steps))));
+    builder.select_list.back()->setAlias(ColumnNames::Values);
+    builder.from_table = enriched_parts;
+    builder.group_by.push_back(col(ColumnNames::NewGroup));
+    builder.having = makeASTFunction(
+        "equals",
+        makeASTFunction(
+            "timeSeriesThrowDuplicateSeriesIf",
+            makeASTFunction(
+                "notEquals",
+                makeASTFunction("sum", makeASTFunction("length", col("idxs"))),
+                makeASTFunction("uniqExactArray", col("idxs"))),
+            col(ColumnNames::NewGroup)),
+        lit(0u));
+
+    SQLQueryPiece res = base;
+    res.node = function_node;
+    res.select_query = builder.getSelectQuery();
+    return res;
+}
+
+}
