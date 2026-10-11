@@ -108,6 +108,7 @@ namespace FailPoints
     extern const char mt_fail_selected_merge_before_start_once[];
     extern const char mt_alter_throw_in_start_mutation[];
     extern const char mt_alter_settings_throw_before_metadata_commit[];
+    extern const char mt_throw_after_renaming_empty_parts[];
     extern const char mt_alter_settings_pause_before_metadata_commit[];
     extern const char mt_alter_readonly_pause_after_metadata_commit[];
     extern const char mt_move_partition_pause_before_commit[];
@@ -181,6 +182,7 @@ namespace ErrorCodes
     extern const int FAULT_INJECTED;
     extern const int INVALID_TRANSACTION;
     extern const int FILE_DOESNT_EXIST;
+    extern const int UNFINISHED;
 }
 
 namespace ActionLocks
@@ -1413,6 +1415,11 @@ void StorageMergeTree::waitForMutation(Int64 version, const String & mutation_id
     auto mutation_status = getIncompleteMutationsStatus(version, &mutation_ids, wait_for_another_mutation);
     checkMutationStatus(mutation_status, mutation_ids);
 
+    if (shutdown_called && !mutation_status->is_done)
+        throw Exception(ErrorCodes::UNFINISHED,
+                        "Mutation {} is not finished because the table was shut down. "
+                        "It continues when the table is attached again, unless the table was dropped.", mutation_id);
+
     LOG_INFO(log, "Mutation {} done", mutation_id);
 }
 
@@ -2008,7 +2015,7 @@ std::expected<MergeMutateSelectedEntryPtr, SelectMergeFailure> StorageMergeTree:
         chassert(choices.size() == 1);
         MergeSelectorChoice choice = std::move(choices[0]);
 
-        auto future_part = [&]()
+        auto constructed_part = [&]()
         {
             if (txn != nullptr)
                 return constructFuturePart(*this, choice, {MergeTreeDataPartState::Active, MergeTreeDataPartState::Outdated});
@@ -2016,13 +2023,15 @@ std::expected<MergeMutateSelectedEntryPtr, SelectMergeFailure> StorageMergeTree:
             return constructFuturePart(*this, choice, {MergeTreeDataPartState::Active});
         }();
 
-        if (!future_part)
+        if (!constructed_part)
         {
             return std::unexpected(SelectMergeFailure{
                 .reason = SelectMergeFailure::Reason::CANNOT_SELECT,
-                .explanation = PreformattedMessage::create("Can't construct future part from source parts. Probably there was a drop part/partition user query."),
+                .explanation = PreformattedMessage::create("Can't construct future part from source parts ({}). Probably there was a drop part/partition user query.", constructed_part.error().text),
             });
         }
+
+        auto future_part = std::move(*constructed_part);
 
         /// The mutation version of a patch part is the maximum data version its index covers, not a
         /// position in the mutation queue, so it cannot carry this. Patch parts store the updated
@@ -2393,11 +2402,10 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMutate(
 
     auto mutations_end_it = current_mutations_by_version.end();
 
-    /// The block numbers of the lightweight updates that have not written their patch part yet, read
-    /// once for the whole selection: it only has to be a snapshot no older than the parts below.
-    CommittingBlocksSet committing_blocks_snapshot;
-    if (supportsLightweightUpdate())
-        committing_blocks_snapshot = getCommittingBlocks();
+    /// The block numbers still being committed, read once for the whole selection: lightweight updates that
+    /// have not written their patch part yet, and mutations not in `current_mutations_by_version` yet. A block
+    /// allocated after this snapshot is above every registered mutation, so no selection below can skip it.
+    const CommittingBlocksSet committing_blocks_snapshot = getCommittingBlocks();
 
     for (const auto & part : getDataPartsVectorForInternalUsage())
     {
@@ -2576,6 +2584,7 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMutate(
               * entry on a replicated table.
               */
             std::optional<Int64> pending_update_block;
+            std::optional<Int64> unregistered_mutation_block;
             for (const auto & block : committing_blocks_snapshot)
             {
                 if (block.number > new_part_info.getDataVersion())
@@ -2586,6 +2595,25 @@ MergeMutateSelectedEntryPtr StorageMergeTree::selectPartsToMutate(
                     pending_update_block = block.number;
                     break;
                 }
+
+                /// A mutation takes its block number before it is registered. Mutating past it now would
+                /// skip its commands, yet the part's data version would mark it applied.
+                if (block.op == CommittingBlock::Op::Mutation && !current_mutations_by_version.contains(block.number))
+                {
+                    unregistered_mutation_block = block.number;
+                    break;
+                }
+            }
+
+            if (unregistered_mutation_block.has_value())
+            {
+                LOG_DEBUG(
+                    log,
+                    "Will not mutate part {} yet because the mutation with block number {} is not registered",
+                    part->name,
+                    *unregistered_mutation_block);
+                current_parts_postpone_reasons[part->name] = PostponeReasons::UNREGISTERED_MUTATION;
+                continue;
             }
 
             if (pending_update_block.has_value())
@@ -2905,11 +2933,27 @@ std::optional<Int64> StorageMergeTree::getMutationVersionForMergedPart(
     if (!std::ranges::any_of(pending, has_metadata_mutation))
         return sources_data_version;
 
+    /// A mutation that has its block number but is not registered yet is not materialized by the merge
+    /// either: recording a version above it would mark it applied to the merged part.
+    std::optional<Int64> first_unregistered_mutation;
+    for (const auto & block : getCommittingBlocks())
+    {
+        if (block.number > sources_data_version && block.op == CommittingBlock::Op::Mutation
+            && !current_mutations_by_version.contains(block.number))
+        {
+            first_unregistered_mutation = block.number;
+            break;
+        }
+    }
+
     Int64 version = sources_data_version;
 
     auto it = first_pending;
     for (; it != current_mutations_by_version.end(); ++it)
     {
+        if (first_unregistered_mutation && static_cast<Int64>(it->first) > *first_unregistered_mutation)
+            break;
+
         if (!isMaterializedByMerge(*this, *it->second.commands, partition_id, getContext()))
             break;
 
@@ -3452,6 +3496,98 @@ static std::pair<StorageMergeTree::MutableDataPartsVector, std::vector<scope_gua
 }
 
 
+void StorageMergeTree::removeRolledBackEmptyPartsAndRethrow(MutableDataPartsVector & new_parts, Transaction & transaction)
+{
+    /// Without a transaction nothing on disk marks the empty parts as rolled back. If they stayed on disk until
+    /// the background cleanup, a restart would load them as covering parts and resurrect the failed operation,
+    /// and a merge of the parts inside their ranges would write a part intersecting them, so the table could not
+    /// be loaded. The cleanup cannot remove them earlier, because an empty part waits for the outdated parts in
+    /// its range, which it never covered. So remove them right away. With a transaction, the rolled back
+    /// creation CSN is stored on disk, and the transaction itself takes care of its parts.
+    /// The removal renames the part directory to `delete_tmp_` first, and such directories are not loaded, so only
+    /// a failure of that rename leaves a part to be loaded. No marker could be written to the disk in that case
+    /// either, so report the parts that stay on disk loudly instead of pretending the restart is safe.
+    if (!transaction.getMergeTreeTransaction())
+    {
+        Strings not_removed_parts;
+        try
+        {
+            transaction.rollback();
+        }
+        catch (...)
+        {
+            tryLogCurrentException(log, "while rolling back the empty parts");
+
+            /// `rollback` can throw before it moves the parts out of `PreActive`, e.g. when storing the rolled back
+            /// creation CSN fails. Evict such parts from the working set directly, so that they do not leak there
+            /// (counted by the size limits, awaited by `preactive_parts_cv` waiters) and can be removed below.
+            /// Clear the transaction as well, otherwise its destructor would roll back the parts again.
+            DataPartsVector preactive_parts;
+            {
+                auto parts_lock = lockParts();
+                for (const auto & part : new_parts)
+                    if (part && part->getState() == DataPartState::PreActive)
+                        preactive_parts.push_back(part);
+                removePartsFromWorkingSetImmediatelyAndSetTemporaryState(preactive_parts, parts_lock);
+                transaction.clear();
+            }
+            preactive_parts_cv.notify_all();
+        }
+        for (auto & part : new_parts)
+        {
+            if (!part)
+                continue;
+            String part_name = part->name;
+
+            /// `createEmptyPart` opened a part storage transaction, which is still active unless `commit` reached it.
+            /// On object storage its operations and uploaded blobs are only staged, so the removal below would not see
+            /// them and they would be stranded. Undo it first (it is a no-op for an already committed transaction).
+            try
+            {
+                part->getDataPartStorage().undoTransaction();
+            }
+            catch (...)
+            {
+                tryLogCurrentException(log, fmt::format("while undoing the transaction of the rolled back empty part {}", part_name));
+            }
+
+            try
+            {
+                if (!tryRemovePartImmediately(std::move(part)))
+                    not_removed_parts.push_back(part_name);
+            }
+            catch (...)
+            {
+                tryLogCurrentException(log, fmt::format("while removing the rolled back empty part {}", part_name));
+                not_removed_parts.push_back(part_name);
+            }
+        }
+        if (!not_removed_parts.empty())
+        {
+            /// Put the warning into the error returned to the client as well, because only a manual detach fixes it.
+            String warning = fmt::format("Cannot remove the rolled back empty parts {}. They stay on disk and will be loaded as covering"
+                " parts after a restart, which can make the table fail to load. Detach them manually.",
+                fmt::join(not_removed_parts, ", "));
+            LOG_ERROR(log, "{}", warning);
+            try
+            {
+                throw;
+            }
+            catch (Exception & e)
+            {
+                e.addMessage(warning);
+                throw;
+            }
+            catch (...)
+            {
+                throw Exception(getCurrentExceptionCode(), "{}. {}", getCurrentExceptionMessage(false), warning);
+            }
+        }
+    }
+    throw;
+}
+
+
 DataPartsVector StorageMergeTree::renameAndCommitEmptyParts(MutableDataPartsVector & new_parts, Transaction & transaction)
 {
     DataPartsVector covered_parts;
@@ -3496,14 +3632,29 @@ DataPartsVector StorageMergeTree::renameAndCommitEmptyParts(MutableDataPartsVect
         sleepForMilliseconds(200);
     } while (true);
 
-    transaction.renameParts();
-
     /// `covered_parts` above is only the precommit selection: `commit` reacquires the parts lock and
     /// recomputes the covered set, so it is the only authoritative answer to "what was removed".
     /// Everything below -- and the clone to `detached/` made by the callers -- must use that answer,
     /// otherwise a concurrently appearing covering part makes us report, undelay and detach a part
     /// that is still active.
-    DataPartsVector removed_parts = transaction.commit();
+    DataPartsVector removed_parts;
+    try
+    {
+        transaction.renameParts();
+
+        /// The parts are already renamed on disk, so the rollback has to deal with them, as when committing their metadata fails.
+        fiu_do_on(FailPoints::mt_throw_after_renaming_empty_parts,
+        {
+            throw Exception(ErrorCodes::FAULT_INJECTED, "Injected failure after renaming empty parts");
+        });
+
+        removed_parts = transaction.commit();
+    }
+    catch (...)
+    {
+        /// Ok: the function rethrows the current exception.
+        removeRolledBackEmptyPartsAndRethrow(new_parts, transaction);
+    }
 
     LOG_INFO(log, "Removed {} parts out of the {} selected by covering them with empty {} parts. With txn {}.",
              removed_parts.size(), covered_parts.size(), new_parts.size(), transaction.getTID());
@@ -4239,6 +4390,8 @@ void StorageMergeTree::movePartitionToTable(const StoragePtr & dest_table, const
         Transaction dest_transaction(*dest_table_storage, txn.get());
         Transaction src_transaction(*this, txn.get());
 
+        bool src_empty_parts_renaming = false;
+        try
         {
             auto dest_data_parts_lock = dest_table_storage->lockParts();
             auto src_data_parts_lock = lockParts();
@@ -4270,8 +4423,23 @@ void StorageMergeTree::movePartitionToTable(const StoragePtr & dest_table, const
             dest_transaction.renameParts();
             dest_transaction.commit(dest_data_parts_lock);
 
+            src_empty_parts_renaming = true;
             src_transaction.renameParts();
+
+            fiu_do_on(FailPoints::mt_throw_after_renaming_empty_parts,
+            {
+                throw Exception(ErrorCodes::FAULT_INJECTED, "Injected failure after renaming empty parts");
+            });
+
             src_transaction.commit(src_data_parts_lock);
+        }
+        catch (...)
+        {
+            /// The empty parts covering the source parts are renamed on disk, so they have to be removed right away,
+            /// see `removeRolledBackEmptyPartsAndRethrow`. It locks the parts, which the `try` block above has already unlocked.
+            if (src_empty_parts_renaming)
+                removeRolledBackEmptyPartsAndRethrow(new_empty_covering_src_parts, src_transaction);
+            throw;
         }
 
         /// Note: same elapsed time and profile events for all parts is used
@@ -4429,8 +4597,15 @@ BackupEntries StorageMergeTree::backupMutations(UInt64 version, const String & d
 }
 
 
-void StorageMergeTree::attachRestoredParts(MutableDataPartsVector && parts, const std::optional<ZooKeeperRetriesInfo> &)
+void StorageMergeTree::attachRestoredParts(MutableDataPartsVector && parts, const ContextPtr & query_context, const std::optional<ZooKeeperRetriesInfo> &)
 {
+    /// The parts are committed one by one, so check the size limits of a temporary table for all of them beforehand,
+    /// with the settings of the `RESTORE` query: a restore that does not fit is rejected as a whole, as `ATTACH PARTITION`.
+    {
+        auto lock = lockParts();
+        throwIfTemporaryTableSizeLimitsExceededForReplacement(query_context, lock, parts, std::nullopt);
+    }
+
     for (auto part : parts)
     {
         /// It's important to create it outside of lock scope because
@@ -4468,17 +4643,15 @@ MutationCommands StorageMergeTree::MutationsSnapshot::getOnFlyMutationCommandsFo
     return result;
 }
 
-NameSet StorageMergeTree::MutationsSnapshot::getAllUpdatedColumns() const
+NameSet StorageMergeTree::MutationsSnapshot::getColumnsChangedOnFly() const
 {
     NameSet res = getColumnsUpdatedInPatches();
     if (!hasDataMutations() && !hasAlterMutations())
         return res;
 
     for (const auto & [version, commands] : mutations_by_version)
-    {
-        auto names = commands->getAllUpdatedColumns();
-        std::move(names.begin(), names.end(), std::inserter(res, res.end()));
-    }
+        addColumnsChangedOnFly(*commands, res);
+
     return res;
 }
 
