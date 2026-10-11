@@ -25,8 +25,7 @@ node = cluster.add_instance(
 
 STALE_NAN = struct.unpack("<d", struct.pack("<Q", 0x7FF0000000000002))[0]
 
-# Whole seconds in the past, so the timestamps are exact in milliseconds.
-now = int(time.time())
+now = 0
 
 
 def ms(seconds_ago):
@@ -35,8 +34,11 @@ def ms(seconds_ago):
 
 @pytest.fixture(scope="module", autouse=True)
 def setup():
+    global now
     try:
         cluster.start()
+        # Whole seconds, taken after startup so the samples stay inside the 5-minute window.
+        now = int(time.time())
         node.query("CREATE TABLE prometheus ENGINE=TimeSeries")
         time_series = [
             ({"__name__": "fed_cpu", "host": "a", "instance": "i1"}, {now - 120: 1.0, now - 60: 2.5}),
@@ -100,5 +102,6 @@ def test_federate_without_match_is_empty():
 
 
 def test_federate_bad_selector():
-    federate({"match[]": "rate(fed_cpu[5m])"}, expected_status=400)
+    response = federate({"match[]": "rate(fed_cpu[5m])"}, expected_status=400)
+    assert response.headers["Content-Type"] == "application/json"
     federate({"match[]": "fed_cpu{"}, expected_status=400)

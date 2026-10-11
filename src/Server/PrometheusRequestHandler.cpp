@@ -636,6 +636,8 @@ public:
             /// not with the query: report it as an internal error so that clients don't attribute it
             /// to the PromQL expression.
             bool server_side_error = (e.code() == ErrorCodes::INCOMPATIBLE_SCHEMA);
+            /// The error body is JSON, also for endpoints whose success body is not.
+            response.setContentType("application/json");
             response.setStatusAndReason(
                 server_side_error ? Poco::Net::HTTPResponse::HTTP_INTERNAL_SERVER_ERROR : Poco::Net::HTTPResponse::HTTP_BAD_REQUEST);
             String error_str;
