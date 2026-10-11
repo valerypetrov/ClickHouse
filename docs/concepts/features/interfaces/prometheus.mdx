@@ -63,6 +63,7 @@ Configure one prefix-routed handler on the main ClickHouse HTTP port:
 | `/prometheus/api/v1/format_query` | PromQL expression formatting |
 | `/prometheus/api/v1/series` | Series metadata |
 | `/prometheus/api/v1/metadata` | Metric-family metadata |
+| `/prometheus/api/v1/federate` | Federation of the latest samples |
 
 The example omits `database` and `table` from the handler. Each request must provide the `table` query parameter (except for `/format_query`, which only parses the given PromQL expression and doesn't need a table). It can also provide `database`, use a qualified table name such as `prometheus.metrics`, or omit the database to use `default`. This allows one handler to serve multiple `TimeSeries` tables.
 
