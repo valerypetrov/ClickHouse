@@ -36,6 +36,7 @@ namespace Setting
 {
     extern const SettingsBool enable_materialized_cte;
     extern const SettingsBool promql_exact_rate;
+    extern const SettingsBool promql_push_down_label_matchers;
 }
 
 namespace
@@ -201,7 +202,9 @@ void StoragePrometheusQuery::readImpl(
     checkTimeSeriesVersionSupportedByPromQL(*time_series_storage);
 
     LOG_INFO(log, "Building SQL to evaluate promql: {}", *config.promql_query);
-    PrometheusQueryToSQL::Converter converter{config.promql_query, config.evaluation_settings};
+    auto evaluation_settings = config.evaluation_settings;
+    evaluation_settings.push_down_label_matchers = context->getSettingsRef()[Setting::promql_push_down_label_matchers];
+    PrometheusQueryToSQL::Converter converter{config.promql_query, evaluation_settings};
     ASTPtr select_query = converter.getSQL();
 
     LOG_INFO(log, "Will execute query:\n{}", select_query->formatForLogging());
