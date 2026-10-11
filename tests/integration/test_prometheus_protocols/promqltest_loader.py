@@ -704,7 +704,7 @@ def series_insert_sql(table: str, interval_ns: int, series: SeriesSpec) -> Optio
 
 
 def sql_literal(expr: str) -> str:
-    return "'" + expr.replace("'", "''") + "'"
+    return "'" + expr.replace("\\", "\\\\").replace("'", "''") + "'"
 
 
 def eval_sql(table: str, case: EvalCase) -> str:
