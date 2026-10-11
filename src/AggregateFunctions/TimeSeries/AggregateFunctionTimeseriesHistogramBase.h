@@ -127,10 +127,6 @@ public:
         return Traits::getName();
     }
 
-    /// Timeseries parameters may carry DecimalField (from toDateTime64(...) casts), whose
-    /// default printed form collides with String literals — so we print parameters with ::Type.
-    bool shouldPrintParametersWithTypes() const override { return true; }
-
     explicit AggregateFunctionTimeseriesHistogramBase(const DataTypes & argument_types_, const Array & parameters_,
         TimestampType start_timestamp_, TimestampType end_timestamp_, IntervalType step_, IntervalType window_, UInt32 timestamp_scale_)
         : Base(
