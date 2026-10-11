@@ -151,6 +151,12 @@ NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])	37
 NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])	37
 NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])	37
 NOT hasAllTokenLike(msg, [\'charg%\', \'%ed\'])	37
+isNull(hasAnyTokenLike(msg, \'charg%\'))	22
+isNull(hasAnyTokenLike(msg, \'charg%\'))	22
+ifNull(hasAnyTokenLike(msg, \'charg%\'), 1)	27
+ifNull(hasAnyTokenLike(msg, \'charg%\'), 1)	27
+isNull(hasAllTokenLike(msg, [\'charg%\', \'%ed\']))	22
+isNull(hasAllTokenLike(msg, [\'charg%\', \'%ed\']))	22
 -- several text indexes on one expression must give the function the same tokenizer
 array	8
 array	8
