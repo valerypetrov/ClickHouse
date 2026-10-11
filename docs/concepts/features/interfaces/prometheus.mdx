@@ -241,6 +241,23 @@ curl --user default:<password> --get \
   --data-urlencode "table=metrics"
 ```
 
+## Federate metrics {#federation}
+
+ClickHouse supports the [Prometheus federation](https://prometheus.io/docs/prometheus/latest/federation/) endpoint at `/prometheus/api/v1/federate` (or at any path ending with `/federate` served by a handler of type `query`). For each series matched by the `match[]` selectors, it returns the latest sample of the last 5 minutes in the Prometheus text format, so a Prometheus server can scrape it:
+
+```yaml
+scrape_configs:
+  - job_name: clickhouse-federate
+    honor_labels: true
+    scheme: https
+    metrics_path: /prometheus/api/v1/federate
+    params:
+      'match[]': ['{job="node"}']
+      table: ['prometheus.metrics']
+    static_configs:
+      - targets: ['clickhouse.example.com:8443']
+```
+
 ## Read metrics with remote read {#remote-read}
 
 ClickHouse supports the [Prometheus remote-read protocol](https://prometheus.io/docs/prometheus/latest/querying/remote_read_api/) at `/prometheus/api/v1/read`.

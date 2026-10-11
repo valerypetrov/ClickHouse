@@ -568,6 +568,11 @@ public:
 
                 protocol.executePromQLQuery(getOutputStream(response), params, query_finish_callback);
             }
+            else if (uri_path.ends_with("/federate"))
+            {
+                response.setContentType("text/plain; version=0.0.4; charset=utf-8; escaping=underscores");
+                protocol.federate(getOutputStream(response), params->getAll("match[]"), query_finish_callback);
+            }
             else if (uri_path.ends_with("/parse_query"))
             {
                 throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The parse_query endpoint is not implemented");
