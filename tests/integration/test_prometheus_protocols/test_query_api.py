@@ -228,6 +228,14 @@ def test_query_lookback_delta_setting():
         == expected
     )
 
+    # A negative value is rejected, even one below 1 microsecond.
+    for value in ["-60", "-0.0000009"]:
+        error = execute_query_via_http_api(
+            node.ip_address, 9093, "/api/v1/query", query, timestamp=151,
+            params={"promql_lookback_delta": value}, expect_error=True,
+        )
+        assert "The setting promql_lookback_delta must not be negative" in error
+
 
 def test_query_default_subquery_step_setting():
     query = 'count_over_time(foo{shape="circle"}[30s:])'
@@ -238,6 +246,11 @@ def test_query_default_subquery_step_setting():
     assert count_points({}) == '{"resultType": "vector", "result": [{"metric": {"shape": "circle", "size": "l"}, "value": [150, "2"]}]}'
     assert count_points({"promql_default_subquery_step": "10"}) == '{"resultType": "vector", "result": [{"metric": {"shape": "circle", "size": "l"}, "value": [150, "3"]}]}'
     assert count_points({"promql_default_subquery_step": "0"}) == count_points({})
+    error = execute_query_via_http_api(
+        node.ip_address, 9093, "/api/v1/query", query, timestamp=150,
+        params={"promql_default_subquery_step": "-0.0000009"}, expect_error=True,
+    )
+    assert "The setting promql_default_subquery_step must not be negative" in error
 
 
 def test_query_lookback_delta_low_timestamp_precision():
