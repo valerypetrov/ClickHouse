@@ -262,10 +262,7 @@ SQLQueryPiece applyFunctionInfo(
     if (base.store_method == StoreMethod::EMPTY || info.store_method == StoreMethod::EMPTY)
         return SQLQueryPiece{function_node, ResultType::INSTANT_VECTOR, StoreMethod::EMPTY};
 
-    /// Step 1: one row for each sample of `v`, `idx` is the number of its step starting from 0.
-    /// SELECT group, timeSeriesRemoveAllTagsExcept(group, ['instance', 'job']) AS join_group, <name matches> AS ignored,
-    ///        arrayJoin(<steps with values>) AS idx, assumeNotNull(values[idx + 1]) AS value
-    /// FROM <base>
+    /// Step 1: one row for each sample of `v`, with its identifying labels and its step number.
     String samples;
     {
         SelectQueryBuilder builder;
@@ -295,9 +292,7 @@ SQLQueryPiece applyFunctionInfo(
         samples = addSubquery(builder.getSelectQuery(), SQLSubqueryType::MATERIALIZED_TABLE, context);
     }
 
-    /// Step 2: Prometheus selects only info series with all identifying labels found on the series of `v`,
-    /// so only the series of `v` with all of them can be enriched.
-    /// (SELECT length(groupUniqArrayArray(<label names of join_group>)) FROM step1 WHERE NOT ignored)
+    /// Step 2: the number of identifying labels found on `v`, Prometheus enriches only series having all of them.
     String num_identifying_labels;
     {
         SelectQueryBuilder builder;
@@ -307,11 +302,7 @@ SQLQueryPiece applyFunctionInfo(
         num_identifying_labels = addSubquery(builder.getSelectQuery(), SQLSubqueryType::SCALAR, context);
     }
 
-    /// Step 3: one row for each sample of the info series, its value is the timestamp of the sample.
-    /// SELECT group AS info_group, timeSeriesRemoveAllTagsExcept(group, ['instance', 'job']) AS info_join_group,
-    ///        ifNull(timeSeriesExtractTag(group, '__name__'), '') AS info_name,
-    ///        arrayJoin(<steps with values>) AS info_idx, assumeNotNull(values[info_idx + 1]) AS info_timestamp
-    /// FROM <info>
+    /// Step 3: one row for each sample of the info series, its value is the sample's timestamp.
     String info_samples;
     {
         SelectQueryBuilder builder;
@@ -346,11 +337,7 @@ SQLQueryPiece applyFunctionInfo(
         info_samples = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
     }
 
-    /// Step 4: the identifying labels and the steps of the samples which can be enriched.
-    /// SELECT join_group AS base_join_group, idx AS base_idx
-    /// FROM step1
-    /// WHERE NOT ignored AND join_group != 0 AND length(timeSeriesGroupToTags(join_group)) = step2
-    /// GROUP BY join_group, idx
+    /// Step 4: the identifying labels and steps of the samples which can be enriched.
     String base_steps;
     {
         SelectQueryBuilder builder;
@@ -371,11 +358,7 @@ SQLQueryPiece applyFunctionInfo(
         base_steps = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
     }
 
-    /// Step 5: the newest series of each info metric at each step, two of them with the same timestamp is an error.
-    /// SELECT info_join_group, info_idx, argMax(info_group, info_timestamp) AS newest_info_group
-    /// FROM step3 JOIN step4 ON info_join_group = base_join_group AND info_idx = base_idx
-    /// GROUP BY info_join_group, info_idx, info_name
-    /// HAVING throwIf(countEqual(groupArray(info_timestamp), max(info_timestamp)) > 1, '...') = 0
+    /// Step 5: the newest series of each info metric at each step, a tie is an error.
     String newest_info;
     {
         SelectQueryBuilder builder;
@@ -409,9 +392,6 @@ SQLQueryPiece applyFunctionInfo(
     }
 
     /// Step 6: the info series used at each step.
-    /// SELECT info_join_group AS chosen_join_group, info_idx AS chosen_idx, arraySort(groupArray(newest_info_group)) AS info_groups
-    /// FROM step5
-    /// GROUP BY info_join_group, info_idx
     String chosen_info;
     {
         SelectQueryBuilder builder;
@@ -427,9 +407,6 @@ SQLQueryPiece applyFunctionInfo(
     }
 
     /// Step 7: splits each series of `v` into parts enriched by the same info series.
-    /// SELECT group, ignored, info_groups, groupArray(idx) AS idxs, groupArray(value) AS step_values
-    /// FROM step1 LEFT ANY JOIN step6 ON join_group = chosen_join_group AND idx = chosen_idx
-    /// GROUP BY group, ignored, info_groups
     String series_parts;
     {
         SelectQueryBuilder builder;
@@ -454,14 +431,7 @@ SQLQueryPiece applyFunctionInfo(
         series_parts = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
     }
 
-    /// Step 8: adds the data labels, two info metrics with different values of a label is an error.
-    /// SELECT if(empty(info_tags), group, timeSeriesTagsToGroup(arrayConcat(timeSeriesGroupToTags(group), info_tags))) AS new_group,
-    ///        idxs, step_values,
-    ///        if(ignored, [], arrayDistinct(arrayFilter(t -> <data label not found in group>,
-    ///                                                  arrayFlatten(arrayMap(g -> timeSeriesGroupToTags(g), info_groups))))) AS info_tags
-    /// FROM step7
-    /// WHERE throwIf(length(arrayDistinct(arrayMap(t -> t.1, info_tags))) != length(info_tags), 'conflicting label') = 0
-    ///       [AND (ignored OR notEmpty(info_tags))]
+    /// Step 8: adds the data labels, two info metrics giving a label different values is an error.
     String enriched_parts;
     {
         SelectQueryBuilder builder;
@@ -529,13 +499,7 @@ SQLQueryPiece applyFunctionInfo(
         enriched_parts = addSubquery(builder.getSelectQuery(), SQLSubqueryType::TABLE, context);
     }
 
-    /// Step 9: collects the parts of each new series.
-    /// SELECT new_group AS group,
-    ///        arrayMap((v, p) -> if(p, v, NULL), groupArrayInsertAtArray(0., <count_of_time_steps>)(step_values, idxs),
-    ///                 groupArrayInsertAtArray(0, <count_of_time_steps>)(arrayMap(i -> 1, idxs), idxs)) AS values
-    /// FROM step8
-    /// GROUP BY new_group
-    /// HAVING timeSeriesThrowDuplicateSeriesIf(sum(length(idxs)) != uniqExactArray(idxs), new_group) = 0
+    /// Step 9: collects the parts of each new series back into one grid.
     const UInt64 num_steps = stepsInTimeSeriesRange(base.start_time, base.end_time, base.step);
     SelectQueryBuilder builder;
     builder.select_list.push_back(col(ColumnNames::NewGroup));
