@@ -149,6 +149,12 @@ namespace
     {
         if (node->node_type == NodeType::InstantSelector)
             return node;
+        /// Prometheus visits an aggregation's expression before its parameter.
+        if (node->node_type == NodeType::AggregationOperator)
+        {
+            if (const auto * selector = findFirstSelector(node->children.back()))
+                return selector;
+        }
         for (const auto * child : node->children)
         {
             if (const auto * selector = findFirstSelector(child))
@@ -255,6 +261,9 @@ SQLQueryPiece applyFunctionInfo(
     info_selector.matchers = matchers;
     if (std::ranges::none_of(matchers, [](const Matcher & matcher) { return matcher.label_name == kMetricName; }))
         info_selector.matchers.insert(info_selector.matchers.begin(), Matcher{kMetricName, kTargetInfo, MatcherType::EQ});
+    /// timeSeriesSelector() needs a matcher not matching "", and every series has a name.
+    if (std::ranges::all_of(info_selector.matchers, matchesEmptyString))
+        info_selector.matchers.push_back(Matcher{kMetricName, ".+", MatcherType::RE});
 
     auto base = toVectorGrid(std::move(arguments[0]), context);
     auto info = fromSelectorSampleTimestamps(
