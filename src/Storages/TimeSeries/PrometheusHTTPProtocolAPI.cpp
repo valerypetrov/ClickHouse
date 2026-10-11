@@ -1116,6 +1116,8 @@ void PrometheusHTTPProtocolAPI::federate(WriteBuffer & response, const Strings &
         Block block;
         while (executor.pull(block))
         {
+            if (block.rows() == 0)
+                continue;
             const auto & tags_column = typeid_cast<const ColumnArray &>(*block.getByName(TimeSeriesColumnNames::Tags).column);
             const auto & offsets = tags_column.getOffsets();
             const auto & tag_names = typeid_cast<const ColumnTuple &>(tags_column.getData()).getColumn(0);
@@ -1159,9 +1161,11 @@ void PrometheusHTTPProtocolAPI::federate(WriteBuffer & response, const Strings &
                 }
 
                 /// Prometheus adds an empty `instance` label to each series without one.
-                writeChar(separator, response);
                 if (!has_instance)
+                {
+                    writeChar(separator, response);
                     writeString("instance=\"\"", response);
+                }
                 writeString("} ", response);
                 writeFederateValue(value_column->getFloat64(row), response);
                 writeChar(' ', response);
