@@ -65,21 +65,6 @@ struct PrometheusQueryParsingUtil
                                  String * error_message = nullptr,
                                  size_t * error_pos = nullptr,
                                  bool allow_octal_literals = false);
-
-    /// Parses the range in a range selector, for example for "[1h30m]" the function parses "1h30m".
-    static bool tryParseSelectorRange(std::string_view input,
-                                      UInt32 time_scale,
-                                      DurationType & res_range,
-                                      String * error_message = nullptr,
-                                      size_t * error_pos = nullptr);
-
-    /// Parses the range and optionally the step in a subquery, for example for "[1h:5m]" the function parses "1h" and "5m".
-    static bool tryParseSubqueryRange(std::string_view input,
-                                      UInt32 time_scale,
-                                      DurationType & res_range,
-                                      std::optional<DurationType> & res_step,
-                                      String * error_message = nullptr,
-                                      size_t * error_pos = nullptr);
 };
 
 }

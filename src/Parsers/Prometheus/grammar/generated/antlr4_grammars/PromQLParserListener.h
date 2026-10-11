@@ -64,6 +64,9 @@ public:
   virtual void enterOffsetValue(PromQLParser::OffsetValueContext *ctx) = 0;
   virtual void exitOffsetValue(PromQLParser::OffsetValueContext *ctx) = 0;
 
+  virtual void enterDurationExpression(PromQLParser::DurationExpressionContext *ctx) = 0;
+  virtual void exitDurationExpression(PromQLParser::DurationExpressionContext *ctx) = 0;
+
   virtual void enterInstantSelector(PromQLParser::InstantSelectorContext *ctx) = 0;
   virtual void exitInstantSelector(PromQLParser::InstantSelectorContext *ctx) = 0;
 

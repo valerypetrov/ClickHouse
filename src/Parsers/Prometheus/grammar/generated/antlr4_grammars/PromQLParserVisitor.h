@@ -52,6 +52,8 @@ public:
 
     virtual std::any visitOffsetValue(PromQLParser::OffsetValueContext *context) = 0;
 
+    virtual std::any visitDurationExpression(PromQLParser::DurationExpressionContext *context) = 0;
+
     virtual std::any visitInstantSelector(PromQLParser::InstantSelectorContext *context) = 0;
 
     virtual std::any visitLabelMatcher(PromQLParser::LabelMatcherContext *context) = 0;

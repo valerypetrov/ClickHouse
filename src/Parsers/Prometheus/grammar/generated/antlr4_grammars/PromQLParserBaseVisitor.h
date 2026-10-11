@@ -81,6 +81,10 @@ public:
     return visitChildren(ctx);
   }
 
+  virtual std::any visitDurationExpression(PromQLParser::DurationExpressionContext *ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitInstantSelector(PromQLParser::InstantSelectorContext *ctx) override {
     return visitChildren(ctx);
   }

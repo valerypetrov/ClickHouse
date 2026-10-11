@@ -66,6 +66,9 @@ public:
   virtual void enterOffsetValue(PromQLParser::OffsetValueContext * /*ctx*/) override { }
   virtual void exitOffsetValue(PromQLParser::OffsetValueContext * /*ctx*/) override { }
 
+  virtual void enterDurationExpression(PromQLParser::DurationExpressionContext * /*ctx*/) override { }
+  virtual void exitDurationExpression(PromQLParser::DurationExpressionContext * /*ctx*/) override { }
+
   virtual void enterInstantSelector(PromQLParser::InstantSelectorContext * /*ctx*/) override { }
   virtual void exitInstantSelector(PromQLParser::InstantSelectorContext * /*ctx*/) override { }
 

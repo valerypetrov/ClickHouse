@@ -213,16 +213,12 @@ RIGHT_BRACE : '}';
 LEFT_PAREN  : '(';
 RIGHT_PAREN : ')';
 
-LEFT_BRACKET  : '[';
+LEFT_BRACKET  : '[' -> pushMode(DURATION_EXPRESSION);
 RIGHT_BRACKET : ']';
 
 COMMA: ',';
 
 AT: '@';
-
-SUBQUERY_RANGE: LEFT_BRACKET WS_FRAGMENT? NUMBER WS_FRAGMENT? ':' WS_FRAGMENT? NUMBER? WS_FRAGMENT? RIGHT_BRACKET;
-
-SELECTOR_RANGE: LEFT_BRACKET WS_FRAGMENT? NUMBER WS_FRAGMENT? RIGHT_BRACKET;
 
 METRIC_NAME : [a-z_:] [a-z0-9_:]*;
 LABEL_NAME  : [a-z_] [a-z0-9_]*;
@@ -235,3 +231,19 @@ SL_COMMENT : '#' ( ~[\r\n]* [\r\n] | ~[\r\n]+ ) -> channel(COMMENTS);
 
 // Whitespace as a fragment (so it can be used as a part of another token).
 fragment WS_FRAGMENT: [\r\t\n ]+;
+
+// Range selectors and subqueries contain duration expressions like [5m+30s] or [1h:(5m*2)].
+mode DURATION_EXPRESSION;
+
+DURATION_NUMBER        : NUMBER        -> type(NUMBER);
+DURATION_ADD           : '+'           -> type(ADD);
+DURATION_SUB           : '-'           -> type(SUB);
+DURATION_MULT          : '*'           -> type(MULT);
+DURATION_DIV           : '/'           -> type(DIV);
+DURATION_MOD           : '%'           -> type(MOD);
+DURATION_POW           : '^'           -> type(POW);
+DURATION_LEFT_PAREN    : '('           -> type(LEFT_PAREN);
+DURATION_RIGHT_PAREN   : ')'           -> type(RIGHT_PAREN);
+COLON                  : ':';
+DURATION_RIGHT_BRACKET : ']'           -> type(RIGHT_BRACKET), popMode;
+DURATION_WS            : WS_FRAGMENT   -> channel(WHITESPACE);

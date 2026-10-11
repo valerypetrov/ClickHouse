@@ -86,7 +86,7 @@ orOp
     ;
 
 subqueryOp
-    : SUBQUERY_RANGE offsetOp?
+    : LEFT_BRACKET durationExpression COLON durationExpression? RIGHT_BRACKET offsetOp?
     ;
 
 offsetOp
@@ -121,7 +121,18 @@ duration
     ;
 
 offsetValue
-    : (ADD | SUB)? NUMBER
+    : (ADD | SUB)? (NUMBER | LEFT_PAREN durationExpression RIGHT_PAREN)
+    ;
+
+// Duration expressions are evaluated while parsing, numbers are seconds
+
+durationExpression
+    : <assoc = right> durationExpression POW durationExpression
+    | (ADD | SUB) durationExpression
+    | durationExpression (MULT | DIV | MOD) durationExpression
+    | durationExpression (ADD | SUB) durationExpression
+    | LEFT_PAREN durationExpression RIGHT_PAREN
+    | NUMBER
     ;
 
 // Selectors
@@ -148,7 +159,7 @@ labelMatcherList
     ;
 
 rangeSelector
-    : instantSelector SELECTOR_RANGE
+    : instantSelector LEFT_BRACKET durationExpression RIGHT_BRACKET
     ;
 
 selectorWithOffset

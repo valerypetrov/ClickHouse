@@ -19,8 +19,8 @@ public:
     WITHOUT = 23, ON = 24, IGNORING = 25, GROUP_LEFT = 26, GROUP_RIGHT = 27, 
     OFFSET = 28, BOOL = 29, START = 30, END = 31, AGGREGATION_OPERATOR = 32, 
     FUNCTION = 33, LEFT_BRACE = 34, RIGHT_BRACE = 35, LEFT_PAREN = 36, RIGHT_PAREN = 37, 
-    LEFT_BRACKET = 38, RIGHT_BRACKET = 39, COMMA = 40, AT = 41, SUBQUERY_RANGE = 42, 
-    SELECTOR_RANGE = 43, METRIC_NAME = 44, LABEL_NAME = 45, WS = 46, SL_COMMENT = 47
+    LEFT_BRACKET = 38, RIGHT_BRACKET = 39, COMMA = 40, AT = 41, METRIC_NAME = 42, 
+    LABEL_NAME = 43, WS = 44, SL_COMMENT = 45, COLON = 46, DURATION_WS = 47
   };
 
   enum {
@@ -28,12 +28,13 @@ public:
     RuleMultOp = 4, RuleAddOp = 5, RuleCompareOp = 6, RuleAndUnlessOp = 7, 
     RuleOrOp = 8, RuleSubqueryOp = 9, RuleOffsetOp = 10, RuleVector = 11, 
     RuleParens = 12, RuleTimestamp = 13, RuleDuration = 14, RuleOffsetValue = 15, 
-    RuleInstantSelector = 16, RuleLabelMatcher = 17, RuleLabelMatcherOperator = 18, 
-    RuleLabelMatcherList = 19, RuleRangeSelector = 20, RuleSelectorWithOffset = 21, 
-    RuleFunction_ = 22, RuleParameter = 23, RuleParameterList = 24, RuleAggregation = 25, 
-    RuleBy = 26, RuleWithout = 27, RuleGrouping = 28, RuleOn_ = 29, RuleIgnoring = 30, 
-    RuleGroupLeft = 31, RuleGroupRight = 32, RuleLabelName = 33, RuleLabelNameList = 34, 
-    RuleMetricName = 35, RuleKeyword = 36, RuleLiteral = 37
+    RuleDurationExpression = 16, RuleInstantSelector = 17, RuleLabelMatcher = 18, 
+    RuleLabelMatcherOperator = 19, RuleLabelMatcherList = 20, RuleRangeSelector = 21, 
+    RuleSelectorWithOffset = 22, RuleFunction_ = 23, RuleParameter = 24, 
+    RuleParameterList = 25, RuleAggregation = 26, RuleBy = 27, RuleWithout = 28, 
+    RuleGrouping = 29, RuleOn_ = 30, RuleIgnoring = 31, RuleGroupLeft = 32, 
+    RuleGroupRight = 33, RuleLabelName = 34, RuleLabelNameList = 35, RuleMetricName = 36, 
+    RuleKeyword = 37, RuleLiteral = 38
   };
 
   explicit PromQLParser(antlr4::TokenStream *input);
@@ -69,6 +70,7 @@ public:
   class TimestampContext;
   class DurationContext;
   class OffsetValueContext;
+  class DurationExpressionContext;
   class InstantSelectorContext;
   class LabelMatcherContext;
   class LabelMatcherOperatorContext;
@@ -260,7 +262,11 @@ public:
   public:
     SubqueryOpContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    antlr4::tree::TerminalNode *SUBQUERY_RANGE();
+    antlr4::tree::TerminalNode *LEFT_BRACKET();
+    std::vector<DurationExpressionContext *> durationExpression();
+    DurationExpressionContext* durationExpression(size_t i);
+    antlr4::tree::TerminalNode *COLON();
+    antlr4::tree::TerminalNode *RIGHT_BRACKET();
     OffsetOpContext *offsetOp();
 
     virtual void enterRule(antlr4::tree::ParseTreeListener *listener) override;
@@ -367,6 +373,9 @@ public:
     OffsetValueContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *LEFT_PAREN();
+    DurationExpressionContext *durationExpression();
+    antlr4::tree::TerminalNode *RIGHT_PAREN();
     antlr4::tree::TerminalNode *ADD();
     antlr4::tree::TerminalNode *SUB();
 
@@ -379,6 +388,31 @@ public:
 
   OffsetValueContext* offsetValue();
 
+  class  DurationExpressionContext : public antlr4::ParserRuleContext {
+  public:
+    DurationExpressionContext(antlr4::ParserRuleContext *parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<DurationExpressionContext *> durationExpression();
+    DurationExpressionContext* durationExpression(size_t i);
+    antlr4::tree::TerminalNode *ADD();
+    antlr4::tree::TerminalNode *SUB();
+    antlr4::tree::TerminalNode *LEFT_PAREN();
+    antlr4::tree::TerminalNode *RIGHT_PAREN();
+    antlr4::tree::TerminalNode *NUMBER();
+    antlr4::tree::TerminalNode *POW();
+    antlr4::tree::TerminalNode *MULT();
+    antlr4::tree::TerminalNode *DIV();
+    antlr4::tree::TerminalNode *MOD();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener *listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener *listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor *visitor) override;
+   
+  };
+
+  DurationExpressionContext* durationExpression();
+  DurationExpressionContext* durationExpression(int precedence);
   class  InstantSelectorContext : public antlr4::ParserRuleContext {
   public:
     InstantSelectorContext(antlr4::ParserRuleContext *parent, size_t invokingState);
@@ -455,7 +489,9 @@ public:
     RangeSelectorContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     InstantSelectorContext *instantSelector();
-    antlr4::tree::TerminalNode *SELECTOR_RANGE();
+    antlr4::tree::TerminalNode *LEFT_BRACKET();
+    DurationExpressionContext *durationExpression();
+    antlr4::tree::TerminalNode *RIGHT_BRACKET();
 
     virtual void enterRule(antlr4::tree::ParseTreeListener *listener) override;
     virtual void exitRule(antlr4::tree::ParseTreeListener *listener) override;
@@ -776,6 +812,7 @@ public:
   bool sempred(antlr4::RuleContext *_localctx, size_t ruleIndex, size_t predicateIndex) override;
 
   bool vectorOperationSempred(VectorOperationContext *_localctx, size_t predicateIndex);
+  bool durationExpressionSempred(DurationExpressionContext *_localctx, size_t predicateIndex);
 
   // By default the static state used to implement the parser is lazily initialized during the first
   // call to the constructor. You can call this function if you wish to initialize the static state

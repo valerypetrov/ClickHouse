@@ -10,8 +10,11 @@
 #include "config.h"
 
 #if USE_ANTLR4_GRAMMARS
+#include <Core/DecimalFunctions.h>
 #include <Parsers/Prometheus/PrometheusQueryTree.h>
 #include <Common/re2.h>
+
+#include <cmath>
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdocumentation"
@@ -320,27 +323,80 @@ namespace
             return true;
         }
 
-        bool parseSelectorRange(const antlr4::tree::TerminalNode * ctx, DurationType & res_range)
+        /// Evaluates a duration expression to a number of seconds, like Prometheus does.
+        bool evaluateDurationExpression(antlr4_grammars::PromQLParser::DurationExpressionContext * ctx, Float64 & result)
         {
-            String error_message;
-            size_t error_pos = 0;
-            if (!PrometheusQueryParsingUtil::tryParseSelectorRange(getText(ctx), time_scale, res_range, &error_message, &error_pos))
+            if (auto * number_ctx = ctx->NUMBER())
+                return parseScalar(number_ctx, result);
+
+            auto arguments = ctx->durationExpression();
+            if (arguments.size() == 1)
             {
-                error_listener.setError(error_message, error_pos + getStartPos(ctx));
+                if (!evaluateDurationExpression(arguments[0], result))
+                    return false;
+                if (ctx->SUB())
+                    result = -result;
+                return true;
+            }
+
+            if (arguments.size() != 2)
+                throwInconsistentSchema("DurationExpression", ctx->getText());
+
+            Float64 left = 0;
+            Float64 right = 0;
+            if (!evaluateDurationExpression(arguments[0], left) || !evaluateDurationExpression(arguments[1], right))
+                return false;
+
+            if ((ctx->DIV() || ctx->MOD()) && right == 0)
+            {
+                error_listener.setError(ctx->DIV() ? "Division by zero in duration expression" : "Modulo by zero in duration expression",
+                                        getStartPos(ctx));
                 return false;
             }
+
+            if (ctx->ADD())
+                result = left + right;
+            else if (ctx->SUB())
+                result = left - right;
+            else if (ctx->MULT())
+                result = left * right;
+            else if (ctx->DIV())
+                result = left / right;
+            else if (ctx->MOD())
+                result = std::fmod(left, right);
+            else if (ctx->POW())
+                result = std::pow(left, right);
+            else
+                throwInconsistentSchema("DurationExpression", ctx->getText());
             return true;
         }
 
-        bool parseSubqueryRange(const antlr4::tree::TerminalNode * ctx, DurationType & res_range, std::optional<DurationType> & res_step)
+        /// Parses a plain number as before, or evaluates a duration expression like 5m+30s.
+        bool parseDurationExpression(
+            antlr4_grammars::PromQLParser::DurationExpressionContext * ctx, bool must_be_positive, DurationType & result)
         {
-            String error_message;
-            size_t error_pos = 0;
-            if (!PrometheusQueryParsingUtil::tryParseSubqueryRange(getText(ctx), time_scale, res_range, res_step, &error_message, &error_pos))
+            if (auto * number_ctx = ctx->NUMBER())
+                return parseDuration(number_ctx, result);
+
+            Float64 seconds = 0;
+            if (!evaluateDurationExpression(ctx, seconds))
+                return false;
+
+            if (must_be_positive && !(seconds > 0))
             {
-                error_listener.setError(error_message, error_pos + getStartPos(ctx));
+                error_listener.setError("Duration must be greater than 0", getStartPos(ctx));
                 return false;
             }
+
+            /// Prometheus truncates the result of a duration expression to milliseconds.
+            Float64 scale_multiplier = static_cast<Float64>(DecimalUtils::scaleMultiplier<Int64>(time_scale));
+            Float64 value = std::round(std::trunc(seconds * 1000) / 1000 * scale_multiplier);
+            if (!std::isfinite(value) || std::abs(value) >= 9e18)
+            {
+                error_listener.setError("Duration is out of range", getStartPos(ctx));
+                return false;
+            }
+            result = DurationType{static_cast<Int64>(value)};
             return true;
         }
 
@@ -599,13 +655,13 @@ namespace
         {
             auto new_node = std::make_unique<RangeSelector>();
             auto * instant_selector_ctx = ctx->instantSelector();
-            auto * selector_range_ctx = ctx->SELECTOR_RANGE();
-            if (!instant_selector_ctx || !selector_range_ctx)
+            auto * range_ctx = ctx->durationExpression();
+            if (!instant_selector_ctx || !range_ctx)
                 throwInconsistentSchema("RangeSelector", ctx->getText());
 
             auto * instant_selector = makeInstantSelector(instant_selector_ctx);
 
-            if (!instant_selector || !parseSelectorRange(selector_range_ctx, new_node->range))
+            if (!instant_selector || !parseDurationExpression(range_ctx, /* must_be_positive */ true, new_node->range))
             {
                 chassert(error_listener.hasError());
                 return nullptr;
@@ -619,11 +675,13 @@ namespace
         Node * makeSubquery(antlr4_grammars::PromQLParser::SubqueryOpContext * ctx, Node * expression)
         {
             auto new_node = std::make_unique<Subquery>();
-            auto * subquery_range_ctx = ctx->SUBQUERY_RANGE();
-            if (!subquery_range_ctx)
+            auto * range_ctx = ctx->durationExpression(0);
+            if (!range_ctx)
                 throwInconsistentSchema("SubqueryOp", ctx->getText());
 
-            if (!parseSubqueryRange(subquery_range_ctx, new_node->range, new_node->step))
+            auto * step_ctx = ctx->durationExpression(1);
+            if (!parseDurationExpression(range_ctx, /* must_be_positive */ true, new_node->range)
+                || (step_ctx && !parseDurationExpression(step_ctx, /* must_be_positive */ true, new_node->step.emplace())))
             {
                 chassert(error_listener.hasError());
                 return nullptr;
@@ -669,11 +727,13 @@ namespace
 
             if (auto * offset_value_ctx = ctx->offsetValue())
             {
-                auto * number_ctx = offset_value_ctx->NUMBER();
-                if (!number_ctx)
-                    throwInconsistentSchema("OffsetOp", ctx->getText());
                 auto & offset_value = new_node->offset_value.emplace();
-                ok &= parseDuration(number_ctx, offset_value);
+                if (auto * number_ctx = offset_value_ctx->NUMBER())
+                    ok &= parseDuration(number_ctx, offset_value);
+                else if (auto * expression_ctx = offset_value_ctx->durationExpression())
+                    ok &= parseDurationExpression(expression_ctx, /* must_be_positive */ false, offset_value);
+                else
+                    throwInconsistentSchema("OffsetOp", ctx->getText());
                 if (ok && offset_value_ctx->SUB())
                     offset_value = -offset_value;
             }
