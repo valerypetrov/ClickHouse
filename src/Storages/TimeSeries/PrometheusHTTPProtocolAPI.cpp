@@ -1,6 +1,6 @@
 #include <Storages/TimeSeries/PrometheusHTTPProtocolAPI.h>
 
-#include <base/hex.h>
+#include <Common/Hex.h>
 #include <Common/StringUtils.h>
 #include <Common/UTF8Helpers.h>
 #include <Common/isValidUTF8.h>
@@ -87,6 +87,7 @@ namespace Setting
     extern const SettingsUInt64 min_execution_speed_bytes;
     extern const SettingsDouble offset;
     extern const SettingsString order;
+    extern const SettingsBool promql_push_down_label_matchers;
     extern const SettingsSeconds promql_range_query_cache_min_age;
     extern const SettingsSeconds promql_range_query_split_interval;
     extern const SettingsOverflowMode read_overflow_mode;
@@ -308,6 +309,7 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
     evaluation_settings.table_timestamp_type = splitTimeSeriesType(time_series_metadata->columns.get(samples_column_name).type).first;
     evaluation_settings.time_scale = getPromQLResultTimestampScale(evaluation_settings.table_timestamp_type);
     evaluation_settings.time_zone = getPromQLResultTimeZone(evaluation_settings.table_timestamp_type);
+    evaluation_settings.push_down_label_matchers = getContext()->getSettingsRef()[Setting::promql_push_down_label_matchers];
     const UInt32 time_scale = evaluation_settings.time_scale;
 
     if (!params.lookback_delta_param.empty())
