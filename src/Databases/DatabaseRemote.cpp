@@ -24,6 +24,7 @@
 #include <Storages/NamedCollectionsHelpers.h>
 #include <Storages/getStructureOfRemoteTable.h>
 #include <Common/NetException.h>
+#include <Common/ProfileEvents.h>
 #include <Common/RemoteHostFilter.h>
 #include <Common/logger_useful.h>
 #include <Common/parseAddress.h>
@@ -33,6 +34,11 @@
 
 #include <algorithm>
 #include <vector>
+
+namespace ProfileEvents
+{
+    extern const Event DatabaseTablesEnumerated;
+}
 
 namespace DB
 {
@@ -82,6 +88,10 @@ DatabaseRemote::DatabaseRemote(
     , secure(secure_)
     , db_uuid(uuid)
 {
+    if (remote_database.empty())
+        throw Exception(
+            ErrorCodes::BAD_ARGUMENTS, "Engine `{}` requires a non-empty remote database name", database_engine_define_->engine->name);
+
     persistent = !context_->getClientInfo().is_shared_catalog_internal;
     if (persistent)
     {
@@ -249,6 +259,10 @@ Strings DatabaseRemote::fetchTablesList(ContextPtr local_context, const String *
         new_settings[Setting::max_result_bytes] = 0;
         query_context->setSettings(new_settings);
     }
+
+    /// The server lists the tables on its own under the global context (e.g. at shutdown), which has
+    /// no client version.
+    query_context->setInitiatorVersionIfUnset();
 
     /// Ask the replicas of the cluster for the list of names, taking the answer of the first one that
     /// responds (`PoolMode::GET_ONE`), and report the failed attempts when none of them does.
@@ -759,6 +773,8 @@ StoragePtr DatabaseRemote::fetchTable(
         /* relative_data_path_ = */ String{},
         local_context->getDistributedSettings(),
         LoadingStrictnessLevel::ATTACH,
+        /// The sharding key is synthesized here, not supplied by the user.
+        /* is_fresh_definition = */ false,
         table_cluster,
         /* remote_table_function_ptr_ = */ nullptr,
         /* is_remote_function_ = */ true,
@@ -788,15 +804,20 @@ DatabaseTablesIteratorPtr DatabaseRemote::getTablesIterator(
 
 
 DatabaseTablesIteratorPtr DatabaseRemote::getTablesIteratorWithHint(
-    ContextPtr local_context, const FilterByNameFunction & filter_by_table_name, bool /* skip_not_loaded */, const TablesFilter & /*tables_filter*/) const
+    ContextPtr local_context, const FilterByNameFunction & filter_by_table_name, bool /* skip_not_loaded */, const TablesFilter & tables_filter) const
 {
     /// This is the `system.tables` path, which null-guards every metadata column (see
     /// `StorageSystemTables`), so keep a table whose structure could not be fetched instead of hiding
     /// it: the name has already been established by `fetchTablesList`, and a row with an empty engine
     /// is a far better answer than a table that silently disappears from `system.tables` because the
     /// caller lacks `SHOW COLUMNS` on it or a single `DESC TABLE` failed.
+    /// The names the query can ask for are combined into the filter, so that only their structure is
+    /// fetched, rather than that of every table of the remote database.
     return getTablesIteratorImpl(
-        local_context, filter_by_table_name, /* keep_unresolved_tables = */ true, /* throw_on_error = */ true);
+        local_context,
+        combineFilters(filter_by_table_name, tables_filter),
+        /* keep_unresolved_tables = */ true,
+        /* throw_on_error = */ true);
 }
 
 
@@ -827,6 +848,7 @@ DatabaseTablesIteratorPtr DatabaseRemote::getTablesIteratorImpl(
         LOG_DEBUG(log, "Cannot list the tables of the remote database: {}", getCurrentExceptionMessage(/* with_stacktrace = */ false));
     }
 
+    ProfileEvents::increment(ProfileEvents::DatabaseTablesEnumerated, tables.size());
     return std::make_unique<DatabaseTablesSnapshotIterator>(tables, getDatabaseName());
 }
 
@@ -854,6 +876,7 @@ std::vector<LightWeightTableDetails> DatabaseRemote::getLightweightTablesIterato
         result.emplace_back(LightWeightTableDetails{table_name});
     }
 
+    ProfileEvents::increment(ProfileEvents::DatabaseTablesEnumerated, result.size());
     return result;
 }
 
@@ -1242,8 +1265,10 @@ void registerDatabaseRemote(DatabaseFactory & factory)
         /// A chain of proxy databases on this server that refers back to itself is rejected eagerly
         /// (see `throwIfLocalChainRefersBack`), but not on internal metadata replay: a server that
         /// persisted such a chain must still start. An explicit `ATTACH DATABASE` is a user query and
-        /// is validated like `CREATE DATABASE`, so the invariant cannot be bypassed by attaching.
-        if (!(args.internal && args.mode >= LoadingStrictnessLevel::ATTACH))
+        /// is validated like `CREATE DATABASE`, so the invariant cannot be bypassed by attaching. The loader
+        /// flag, not `internal`, is the discriminator: wrappers such as `PARALLEL WITH` run user statements
+        /// as internal ones.
+        if (!(args.is_metadata_replay && args.mode >= LoadingStrictnessLevel::ATTACH))
             database->throwIfLocalChainRefersBack();
 
         return database;
@@ -1350,6 +1375,7 @@ SELECT * FROM remote_system.one;
     factory.registerDatabase(
         "Remote",
         create_fn,
+        mysqlPostgreSQLSecretArguments(3),
         features,
         Documentation{
             .description = common_description,
@@ -1359,6 +1385,7 @@ SELECT * FROM remote_system.one;
     factory.registerDatabase(
         "RemoteSecure",
         create_fn,
+        mysqlPostgreSQLSecretArguments(3),
         features,
         Documentation{
             .description = common_description,
