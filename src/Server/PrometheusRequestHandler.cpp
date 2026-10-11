@@ -485,9 +485,9 @@ public:
 
     void addSettingsFromParams(SettingsChanges & settings_changes) const override
     {
-        if (params->getParsed<bool>("nocache", false))
+        if (hasParamValue("nocache", true))
             settings_changes.push_back({"use_query_cache", false});
-        if (!params->getParsed<bool>("partial_response", true))
+        if (hasParamValue("partial_response", false))
             settings_changes.push_back({"skip_unavailable_shards", false});
     }
 
@@ -523,9 +523,9 @@ public:
                     throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The '{}' parameter is not supported", name);
 
             /// Deduplication and partial responses are not implemented; `dedup=false` and `partial_response=false` ask only for the default.
-            if (params->getParsed<bool>("dedup", false))
+            if (hasParamValue("dedup", true))
                 throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The 'dedup=true' parameter is not supported");
-            if (params->getParsed<bool>("partial_response", false))
+            if (hasParamValue("partial_response", true))
                 throw Exception(ErrorCodes::NOT_IMPLEMENTED, "The 'partial_response=true' parameter is not supported");
 
             /// Dispatch by the trailing path segment only (e.g. "/query_range", "/query"), so the same
@@ -677,6 +677,15 @@ public:
 private:
     /// These parameters change which series a client gets, so they are rejected and never ignored.
     static inline const NameSet unsupported_param_names{"extra_label", "extra_filters", "extra_filters[]"};
+
+    /// Checks every value of a boolean parameter, because a client may repeat it.
+    bool hasParamValue(const String & name, bool value) const
+    {
+        for (const auto & param_value : params->getAll(name))
+            if (parse<bool>(param_value) == value)
+                return true;
+        return false;
+    }
 
     /// Handles the format_query endpoint: parses the PromQL expression given in the 'query' parameter
     /// and writes it back serialized from the parsed tree, i.e. with the whitespace normalized,

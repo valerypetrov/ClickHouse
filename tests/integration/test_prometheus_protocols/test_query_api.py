@@ -422,6 +422,12 @@ def test_thanos_params():
         assert response.status_code == 400
         assert response.json()["errorType"] == "bad_data"
         assert error in extract_error_from_http_api_response(response)
+    # A repeated parameter is rejected if any of its values asks for the option.
+    url = f"http://{node.ip_address}:9093/api/v1/query"
+    for name in ["dedup", "partial_response"]:
+        response = requests.get(url, params=[("query", query), ("time", "150"), (name, "false"), (name, "true")])
+        assert response.status_code == 400
+        assert f"The '{name}=true' parameter is not supported" in extract_error_from_http_api_response(response)
 
 
 # `nocache=1` bypasses the query cache that a settings profile enables.
@@ -442,6 +448,13 @@ def test_nocache_bypasses_query_cache():
     send_to_clickhouse([({"__name__": "nocache_metric"}, {1005.0: 2.0})])
     assert get_value({}) == "1"
     assert get_value({"nocache": "1"}) == "2"
+    # Any `nocache=1` among repeated values bypasses the cache.
+    send_to_clickhouse([({"__name__": "nocache_metric"}, {1008.0: 3.0})])
+    response = requests.get(
+        f"http://{node.ip_address}:9093/api/v1/query",
+        params=[("query", "nocache_metric"), ("time", "1010"), ("user", "query_cache_user"), ("nocache", "0"), ("nocache", "1")],
+    )
+    assert json.loads(extract_data_from_http_api_response(response))["result"][0]["value"][1] == "3"
 
 
 # `partial_response=false` makes an unreachable shard an error even for a user with `skip_unavailable_shards = 1`.
