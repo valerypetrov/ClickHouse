@@ -178,8 +178,18 @@ protected:
             context->getSettingsRef(),
             context->getOpenTelemetrySpanLog());
         thread_trace_context.root_span.kind = OpenTelemetry::SpanKind::SERVER;
+        thread_trace_context.root_span.addAttribute("http.method", request.getMethod());
 
-        handlingRequestWithContext(request, response);
+        try
+        {
+            handlingRequestWithContext(request, response);
+        }
+        catch (...)
+        {
+            thread_trace_context.root_span.addAttribute(std::current_exception());
+            throw;
+        }
+        thread_trace_context.root_span.addAttribute("clickhouse.http_status", response.getStatus());
     }
 
     bool authenticateUserAndMakeContext(HTTPServerRequest & request, HTTPServerResponse & response)

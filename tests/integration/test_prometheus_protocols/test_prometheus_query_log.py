@@ -2,6 +2,7 @@
 Integration tests that assert Prometheus HTTP handler operations are reflected in
 system.query_log: Query API requests (/api/v1/query and /api/v1/query_range) with
 read_rows/read_bytes and remote-write requests (/write) with written_rows/written_bytes.
+It also checks that a W3C traceparent header puts the request spans in system.opentelemetry_span_log.
 """
 
 import urllib.parse
@@ -157,7 +158,8 @@ def test_query_api_traceparent_appears_in_opentelemetry_span_log():
         node,
         f"SELECT count() FROM system.opentelemetry_span_log "
         f"WHERE trace_id = '{trace_id}' AND operation_name = 'PrometheusRequestHandler' "
-        f"AND parent_span_id = {parent_span_id}",
+        f"AND parent_span_id = {parent_span_id} "
+        f"AND attribute['clickhouse.http_status'] = '200'",
         "1\n",
     )
     assert_eq_with_retry(
