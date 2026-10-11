@@ -17,7 +17,7 @@
         </substitution>
     </substitutions>
 
-    <!-- 20000 series with 60 samples each, pushed through TimeSeriesSink in batches of 2000 series like remote write. -->
+    <!-- 20000 series with 60 samples each, pushed through TimeSeriesSink in blocks of 2000 series. -->
     <query>
         INSERT INTO {table} (metric_name, tags, samples)
         SELECT
