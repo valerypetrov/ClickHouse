@@ -323,11 +323,23 @@ namespace
             return true;
         }
 
+        /// Prometheus rejects durations that do not fit into Go's time.Duration.
+        static constexpr Float64 max_duration_seconds = 9223372036.854775807;
+
         /// Evaluates a duration expression to a number of seconds, like Prometheus does.
         bool evaluateDurationExpression(antlr4_grammars::PromQLParser::DurationExpressionContext * ctx, Float64 & result)
         {
             if (auto * number_ctx = ctx->NUMBER())
-                return parseScalar(number_ctx, result);
+            {
+                if (!parseScalar(number_ctx, result))
+                    return false;
+                if (std::abs(result) > max_duration_seconds)
+                {
+                    error_listener.setError("Duration is out of range", getStartPos(number_ctx));
+                    return false;
+                }
+                return true;
+            }
 
             auto arguments = ctx->durationExpression();
             if (arguments.size() == 1)
@@ -391,7 +403,7 @@ namespace
             /// Prometheus truncates the result of a duration expression to milliseconds.
             Float64 scale_multiplier = static_cast<Float64>(DecimalUtils::scaleMultiplier<Int64>(time_scale));
             Float64 value = std::round(std::trunc(seconds * 1000) / 1000 * scale_multiplier);
-            if (!std::isfinite(value) || std::abs(value) >= 9e18)
+            if (!std::isfinite(value) || std::abs(seconds) > max_duration_seconds || std::abs(value) >= 9e18)
             {
                 error_listener.setError("Duration is out of range", getStartPos(ctx));
                 return false;
@@ -729,13 +741,15 @@ namespace
             {
                 auto & offset_value = new_node->offset_value.emplace();
                 if (auto * number_ctx = offset_value_ctx->NUMBER())
+                {
                     ok &= parseDuration(number_ctx, offset_value);
+                    if (ok && offset_value_ctx->SUB())
+                        offset_value = -offset_value;
+                }
                 else if (auto * expression_ctx = offset_value_ctx->durationExpression())
                     ok &= parseDurationExpression(expression_ctx, /* must_be_positive */ false, offset_value);
                 else
                     throwInconsistentSchema("OffsetOp", ctx->getText());
-                if (ok && offset_value_ctx->SUB())
-                    offset_value = -offset_value;
             }
 
             if (!ok)

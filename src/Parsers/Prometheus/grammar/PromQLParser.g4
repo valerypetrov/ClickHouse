@@ -121,7 +121,8 @@ duration
     ;
 
 offsetValue
-    : (ADD | SUB)? (NUMBER | LEFT_PAREN durationExpression RIGHT_PAREN)
+    : (ADD | SUB)? NUMBER
+    | durationExpression
     ;
 
 // Duration expressions are evaluated while parsing, numbers are seconds

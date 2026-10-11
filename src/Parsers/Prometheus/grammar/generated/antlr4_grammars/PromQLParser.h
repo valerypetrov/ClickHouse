@@ -373,11 +373,9 @@ public:
     OffsetValueContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode *NUMBER();
-    antlr4::tree::TerminalNode *LEFT_PAREN();
-    DurationExpressionContext *durationExpression();
-    antlr4::tree::TerminalNode *RIGHT_PAREN();
     antlr4::tree::TerminalNode *ADD();
     antlr4::tree::TerminalNode *SUB();
+    DurationExpressionContext *durationExpression();
 
     virtual void enterRule(antlr4::tree::ParseTreeListener *listener) override;
     virtual void exitRule(antlr4::tree::ParseTreeListener *listener) override;

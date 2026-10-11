@@ -37,6 +37,15 @@ SELECT value FROM prometheusQuery(ts, 'metric1_total offset (2 ^ 2)', 1000);
 SELECT value FROM prometheusQuery(ts, 'metric1_total offset -2 * 2', 1000);
 SELECT value FROM prometheusQuery(ts, 'metric1_total offset (-2 * 2)', 1000);
 SELECT value FROM prometheusQuery(ts, 'metric1_total offset (-2 ^ 2)', 1000);
+SELECT value FROM prometheusQuery(ts, 'metric1_total offset 2 * 3', 1000);
+SELECT value FROM prometheusQuery(ts, 'metric1_total offset (1) * 20', 1000);
+
+SELECT '--- an operator after a parenthesised offset continues the offset ---';
+SELECT value FROM prometheusQuery(ts, 'max_over_time(vector(time())[10s:1s] offset (2) * 3)', 1000);
+SELECT value FROM prometheusQuery(ts, 'max_over_time(vector(time())[10s:1s] offset (2) * 3 + 1)', 1000);
+SELECT value FROM prometheusQuery(ts, 'max_over_time(vector(time())[10s:1s] offset -(2*3) + 1)', 1000);
+SELECT value FROM prometheusQuery(ts, 'max_over_time(vector(time())[10s:1s] offset (5) ^ 2)', 1000);
+SELECT value FROM prometheusQuery(ts, 'max_over_time(vector(time())[10s:1s] offset (-2) * 2)', 1000);
 
 SELECT '--- errors ---';
 SELECT value FROM prometheusQuery(ts, 'count_over_time(metric1_total[1m - 1m])', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
@@ -46,5 +55,8 @@ SELECT value FROM prometheusQuery(ts, 'count_over_time(metric1_total[1m % 0])', 
 SELECT value FROM prometheusQuery(ts, 'sum_over_time(metric1_total[1m:0 * 1s])', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
 SELECT value FROM prometheusQuery(ts, 'count_over_time(metric1_total[1e30 * 1])', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
 SELECT value FROM prometheusQuery(ts, 'metric1_total offset (1 / 0)', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
+SELECT value FROM prometheusQuery(ts, 'sum_over_time(metric1_total[1e10 * 1:1h])', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
+SELECT value FROM prometheusQuery(ts, 'sum_over_time(metric1_total[(1e10):1h])', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
+SELECT value FROM prometheusQuery(ts, 'metric1_total offset -(1e10)', 1000); -- { serverError CANNOT_PARSE_PROMQL_QUERY }
 
 DROP TABLE ts;

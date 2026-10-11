@@ -21,4 +21,12 @@
 200
 100
 100
+297
+98
+--- an operator after a parenthesised offset continues the offset ---
+994
+993
+1005
+975
+1004
 --- errors ---
