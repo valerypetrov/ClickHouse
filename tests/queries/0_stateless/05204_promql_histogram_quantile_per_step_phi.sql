@@ -9,8 +9,7 @@ SET allow_experimental_time_series_table = 1;
 DROP TABLE IF EXISTS ts;
 CREATE TABLE ts ENGINE = TimeSeries;
 
--- Histogram `req` of job a has samples from 100 to 140, job b only from 120.
--- The counter histogram `lat` grows steadily from 100 to 150.
+-- Histogram `req` has job a from 100 to 140 and job b from 120; counter histogram `lat` grows from 100 to 150.
 -- The gauge `phi` goes 0.5, 0.9, 0.25, 1.5, NaN, -1 at 100, 110, ..., 150.
 INSERT INTO ts (metric_name, tags, samples) VALUES
     ('req_bucket', map('job', 'a', 'le', '0.1'), [(toDateTime64(100, 3), 10), (toDateTime64(110, 3), 20), (toDateTime64(120, 3), 5), (toDateTime64(130, 3), 0), (toDateTime64(140, 3), 30)]),
