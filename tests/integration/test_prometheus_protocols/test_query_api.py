@@ -330,6 +330,7 @@ def test_response_compression(encoding, decompress):
     with requests.get(url, headers={"Accept-Encoding": encoding}, stream=True) as response:
         assert response.status_code == 200
         assert response.headers["Content-Encoding"] == encoding
+        assert response.headers["Vary"] == "Accept-Encoding"
         assert decompress(response.raw.read(decode_content=False)) == plain.content
 
     # An error response is compressed too, and it is still a well-formed error envelope.
@@ -345,6 +346,42 @@ def test_response_compression(encoding, decompress):
     )
     assert "Content-Encoding" not in response.headers
     assert response.content == plain.content
+
+
+def test_large_compressed_response():
+    # One million points make both the plain and the compressed body larger than
+    # the 1 MiB buffers of the compressor and of the HTTP response.
+    url = (
+        f"http://{node.ip_address}:9093/api/v1/query_range"
+        "?query=time()&start=0&end=999999&step=1"
+    )
+    plain = requests.get(url, headers={"Accept-Encoding": "identity"})
+    assert plain.status_code == 200, plain.text
+    assert len(plain.json()["data"]["result"][0]["values"]) == 1000000
+
+    with requests.get(url, headers={"Accept-Encoding": "gzip"}, stream=True) as response:
+        assert response.status_code == 200
+        assert response.headers["Content-Encoding"] == "gzip"
+        compressed = response.raw.read(decode_content=False)
+    assert len(compressed) > 1024 * 1024, len(compressed)
+    assert gzip.decompress(compressed) == plain.content
+
+
+def test_error_after_first_block_compressed():
+    # Same as `test_query_after_response_sent`, but the compressor holds the small partial
+    # body back, so the client still gets a well-formed compressed error response.
+    url = (
+        f"http://{node.ip_address}:9093/api/v1/query_range"
+        f"?query={urllib.parse.quote_plus('stream_error')}"
+        f"&start=100&end=200&step=10"
+        f"&http_response_buffer_size=1"
+        f"&max_block_size=1"
+        f"&max_result_rows={STREAM_ERROR_ROW_LIMIT}"
+        f"&result_overflow_mode=throw"
+    )
+    response = requests.get(url, headers={"Accept-Encoding": "gzip"})
+    assert response.headers["Content-Encoding"] == "gzip"
+    assert "Limit for result exceeded" in extract_error_from_http_api_response(response)
 
 
 def test_table_query_param():

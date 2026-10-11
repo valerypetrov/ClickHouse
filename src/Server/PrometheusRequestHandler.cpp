@@ -3,6 +3,7 @@
 #include <IO/CompressionMethod.h>
 #include <IO/HTTPCommon.h>
 #include <IO/ReadBuffer.h>
+#include <Server/HTTP/HTTPResponseHelpers.h>
 #include <Server/HTTP/WriteBufferFromHTTPServerResponse.h>
 #include <Server/HTTP/sendExceptionToHTTPClient.h>
 #include <Server/HTTPHandler.h>
@@ -529,9 +530,11 @@ public:
             auto table = DatabaseCatalog::instance().getTable(getTimeSeriesTableID(), context);
             PrometheusHTTPProtocolAPI protocol{table, context};
 
+            /// Sends the whole body before QueryFinish is logged: the compressor first, then the HTTP buffer.
             auto query_finish_callback = [&]()
             {
                 getOutputStream(response).finalize();
+                parent().getOutputStream(response).finalize();
             };
 
             if (uri_path.ends_with("/query_range"))
@@ -681,6 +684,7 @@ private:
             /* alignment = */ 0,
             /* compress_empty = */ false);
         out.setCompressionMethodHeader(method);
+        addVaryField(response, "Accept-Encoding");
     }
 
     /// Handles the format_query endpoint: parses the PromQL expression given in the 'query' parameter
