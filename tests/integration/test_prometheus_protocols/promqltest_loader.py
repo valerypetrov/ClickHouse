@@ -22,6 +22,9 @@ TABLE_NAME = "promqltest_scenario"
 FLOAT_FRACTION = 0.00001
 FLOAT_MARGIN = 0.0001
 
+# Prometheus marks a stale sample with this exact NaN payload.
+STALE_NAN_SQL = "reinterpretAsFloat64(0x7FF0000000000002)"
+
 _DURATION_TOKEN = re.compile(r"([0-9]*\.?[0-9]+)(ms|s|m|h|d|w|y)")
 _UNITS_NS = {
     "ms": 1_000_000,
@@ -494,11 +497,6 @@ def parse_test_file(path: Path) -> list[Scenario]:
             pending_eval.native_histogram = True
         pending_eval.stale_markers = any(
             sample.stale
-            for block in current.loads
-            for series in block.series
-            for sample in series.samples
-        ) or any(
-            sample.stale
             for series in pending_eval.expected_series
             for sample in series.samples
         )
@@ -685,7 +683,7 @@ def series_insert_values(interval_ns: int, series: SeriesSpec) -> Optional[str]:
             continue
         ts = sample.offset_index * interval_ns
         if sample.stale or (sample.value is not None and math.isnan(sample.value)):
-            val = "nan"
+            val = STALE_NAN_SQL if sample.stale else "nan"
         elif sample.value is None:
             continue
         elif math.isinf(sample.value):
