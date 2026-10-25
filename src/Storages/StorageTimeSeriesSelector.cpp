@@ -464,13 +464,14 @@ namespace
     /// Adds to a query selecting from the tags table the filter of the time series by their time ranges stored in the time ranges table:
     ///
     ///     SELECT ... FROM tags_table
-    ///     LEFT JOIN (SELECT id, 1 AS matched FROM time_ranges_table
+    ///     LEFT ANY JOIN (SELECT id, 1 AS matched FROM time_ranges_table
     ///                WHERE max_time >= <min_time> AND min_time <= <max_time> [AND <id is in one of metric_id_ranges>]) AS time_ranges_subquery USING (id)
     ///     WHERE <conditions of the query> AND (time_ranges_subquery.matched = 1 [OR <id is outside all of metric_id_ranges>])
     ///
     /// The join is a merge join over both tables read in the order of `id` (see StorageTimeSeriesSelector::applySettingsForSelectIDsQuery):
     /// no set is built, the reading stops as soon as the query has enough rows, and the expressions of the SELECT list see only
     /// the time series passing the filter (`timeSeriesStoreTags` registers the tags of the time series it's applied to).
+    /// `ANY` keeps each row of the tags table once, while the time ranges table has a row per insert until its parts are merged.
     /// With `metric_id_ranges` the time ranges table is read by its primary key over the ranges of the selected metrics, and the time series
     /// with identifiers outside the ranges (written with another id generator) are kept without filtering by time.
     void addTimeRangesTableJoin(
@@ -497,11 +498,11 @@ namespace
             subquery_select->setExpression(ASTSelectQuery::Expression::WHERE, makeASTForLogicalAnd(std::move(time_range_conditions)));
         }
 
-        /// LEFT JOIN (<subquery>) AS time_ranges_subquery USING (id)
+        /// LEFT ANY JOIN (<subquery>) AS time_ranges_subquery USING (id)
         {
             auto table_join = make_intrusive<ASTTableJoin>();
             table_join->kind = JoinKind::Left;
-            table_join->strictness = JoinStrictness::All;
+            table_join->strictness = JoinStrictness::Any;
             table_join->using_expression_list = make_intrusive<ASTExpressionList>();
             table_join->using_expression_list->children.push_back(id->clone());
             table_join->children.push_back(table_join->using_expression_list);
@@ -1007,6 +1008,8 @@ void StorageTimeSeriesSelector::applySettingsForSelectIDsQuery(Context & context
     /// and reading out of order would sort both tables before the first row of the result.
     context.setSetting("join_algorithm", String{"full_sorting_merge"});
     context.setSetting("optimize_read_in_order", true);
+    /// The legacy `ANY` semantics turns the `LEFT ANY JOIN` into a `RIGHT_ANY` join, which the merge join can't execute.
+    context.setSetting("any_join_distinct_right_table_keys", false);
 }
 
 

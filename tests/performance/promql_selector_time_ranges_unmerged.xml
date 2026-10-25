@@ -1,0 +1,75 @@
+<test>
+    <settings>
+        <allow_experimental_time_series_table>1</allow_experimental_time_series_table>
+        <enable_time_series_aggregate_functions>1</enable_time_series_aggregate_functions>
+    </settings>
+
+    <!--
+        Benchmarks PromQL selectors over a TimeSeries table whose time ranges table has unmerged parts:
+        until the parts are merged it keeps a row per insert of each time series, and the selector
+        joins the tags table with these rows to filter the time series by time.
+        The time ranges table doesn't merge here, so 8 inserts leave 8 rows for each of 20000 series.
+    -->
+
+    <create_query>
+        CREATE TABLE promql_time_ranges_ts ENGINE = TimeSeries
+        TIME RANGES INNER ENGINE = AggregatingMergeTree ORDER BY id SETTINGS max_bytes_to_merge_at_max_space_in_pool = 1
+    </create_query>
+
+    <!-- Insert i writes two samples of every series at steps 2i and 2i + 1, one sample every 15s over [1000000, 1000225]. -->
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(0, 2))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(2, 4))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(4, 6))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(6, 8))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(8, 10))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(10, 12))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(12, 14))
+        FROM numbers_mt(20000)
+    </fill_query>
+    <fill_query>
+        INSERT INTO promql_time_ranges_ts (metric_name, tags, samples)
+        SELECT 'tr_metric', map('instance', toString(number), 'dc', toString(number % 8)),
+            arrayMap(step -> (toDateTime64(1000000 + step * 15, 3), toFloat64(step)), range(14, 16))
+        FROM numbers_mt(20000)
+    </fill_query>
+
+    <!-- The 5m lookback at 1000240 covers all the samples, so every row of the time ranges table matches. -->
+    <query>SELECT * FROM prometheusQuery('promql_time_ranges_ts', 'count(tr_metric)', 1000240) FORMAT Null</query>
+    <query>SELECT * FROM prometheusQuery('promql_time_ranges_ts', 'sum(rate(tr_metric[5m]))', 1000240) FORMAT Null</query>
+    <query>SELECT * FROM prometheusQuery('promql_time_ranges_ts', 'count(tr_metric{{dc="0"}})', 1000240) FORMAT Null</query>
+
+    <drop_query>DROP TABLE IF EXISTS promql_time_ranges_ts</drop_query>
+</test>
