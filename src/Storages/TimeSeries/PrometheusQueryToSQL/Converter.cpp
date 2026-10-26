@@ -86,12 +86,10 @@ namespace
             {
                 const auto * binary_operator = static_cast<const PrometheusQueryTree::BinaryOperator *>(node);
 
-                if (canFuseAggregationBinaryOperator(binary_operator, context))
+                if (auto fusion = tryFuseAggregationBinaryOperator(binary_operator, context))
                 {
-                    const auto * aggregation
-                        = static_cast<const PrometheusQueryTree::AggregationOperator *>(binary_operator->getLeftArgument());
-                    SQLQueryPiece argument = visitNode(aggregation->getArguments().at(0), context);
-                    return applyFusedAggregationBinaryOperator(binary_operator, std::move(argument), context);
+                    SQLQueryPiece argument = visitNode(fusion->argument, context);
+                    return applyFusedAggregationBinaryOperator(binary_operator, *fusion, std::move(argument), context);
                 }
 
                 SQLQueryPiece left_argument = visitNode(binary_operator->getLeftArgument(), context);

@@ -111,4 +111,4 @@ lim
 req i1
 -- the two sides become the same, so they are read once
 1	0
-2	1
+1	0

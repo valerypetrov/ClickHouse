@@ -35,9 +35,9 @@
 #include <Storages/TimeSeries/TimeSeriesIDRange.h>
 #include <Storages/TimeSeries/TimeSeriesSettings.h>
 #include <Storages/TimeSeries/TimeSeriesTagNames.h>
-#include <Storages/TimeSeries/tryGetLiteralAlternatives.h>
 #include <Storages/TimeSeries/checkTimeSeriesVersion.h>
 #include <Storages/TimeSeries/splitTimeSeriesType.h>
+#include <Storages/TimeSeries/timeSeriesLabelMatcherToAST.h>
 #include <Storages/TimeSeries/timeSeriesTypesToAST.h>
 
 #include <fmt/format.h>
@@ -344,46 +344,7 @@ namespace
 
     ASTPtr matcherToAST(const PrometheusQueryTree::Matcher & matcher, const std::unordered_map<String, String> & column_name_by_tag_name)
     {
-        std::string_view function_name;
-        bool add_anchors = false;
-        bool add_not = false;
-
-        auto matcher_type = matcher.matcher_type;
-        switch (matcher_type)
-        {
-            case PrometheusQueryTree::MatcherType::EQ:  function_name = "equals"; break;
-            case PrometheusQueryTree::MatcherType::NE:  function_name = "notEquals"; break;
-            case PrometheusQueryTree::MatcherType::RE:  function_name = "match"; add_anchors = true; break;
-            case PrometheusQueryTree::MatcherType::NRE: function_name = "match"; add_anchors = true; add_not = true; break;
-        }
-
-        String value = matcher.label_value;
-        if (add_anchors)
-        {
-            /// `IN` matches exactly what the fully anchored regex matches, and the primary key can filter by it.
-            if (auto terms = tryGetLiteralAlternatives(value))
-            {
-                /// A single term is an equality, which the text index on tags can serve too.
-                if (terms->size() == 1)
-                    return makeASTFunction(add_not ? "notEquals" : "equals",
-                        tagNameToAST(matcher.label_name, column_name_by_tag_name), make_intrusive<ASTLiteral>(std::move(terms->front())));
-
-                ASTs literals;
-                for (auto & term : *terms)
-                    literals.push_back(make_intrusive<ASTLiteral>(std::move(term)));
-                return makeASTFunction(add_not ? "notIn" : "in",
-                    tagNameToAST(matcher.label_name, column_name_by_tag_name), makeASTFunction("tuple", std::move(literals)));
-            }
-
-            if (!value.starts_with('^'))
-                value = '^' + value;
-            if (!value.ends_with('$'))
-                value += '$';
-        }
-        ASTPtr res = makeASTFunction(function_name, tagNameToAST(matcher.label_name, column_name_by_tag_name), make_intrusive<ASTLiteral>(value));
-        if (add_not)
-            res = makeASTFunction("not", res);
-        return res;
+        return timeSeriesLabelMatcherToAST(matcher, tagNameToAST(matcher.label_name, column_name_by_tag_name));
     }
 
     /// Makes the conditions checking that the stored time range [min_time, max_time] of a time series

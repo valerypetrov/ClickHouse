@@ -162,6 +162,8 @@ function reads()
 
 echo "-- the two sides become the same, so they are read once"
 reads 'sum by (job) (req{job="api"}) / sum by (job) (req)'
+# Without the pushdown the left side aggregates a subset of the series of the right side, so both sides are calculated
+# from one read of `req` too, see 05452_promql_fused_aggregation_subset.
 CLIENT="$CLIENT --promql_push_down_label_matchers=0" reads 'sum by (job) (req{job="api"}) / sum by (job) (req)'
 
 $CLIENT -q "DROP TABLE prometheus_empty"
