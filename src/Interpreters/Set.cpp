@@ -311,7 +311,7 @@ std::unique_ptr<DiskSetBuilder> Set::createDiskSetBuilderWithKeys(
         spill_settings.max_bytes_for_cache,
         spill_settings.process_list_element);
 
-    computeDiskSetKeysOfTable(method, data_types, key_sizes, spill_settings.max_block_size, [&](ColumnPtr keys)
+    computeDiskSetKeysOfTable(method, getTableKeyTypes(), key_sizes, spill_settings.max_block_size, [&](ColumnPtr keys)
     {
         builder->add(std::move(keys));
     });
@@ -392,6 +392,24 @@ void NO_INLINE Set::insertFromBlockImplCase(
 }
 
 
+/// Returns the elements of the `Tuple` key column `column` as full columns without `LowCardinality`, which
+/// `holder` keeps (see `Set::split_tuple_key`).
+static ColumnRawPtrs getTupleKeyElements(const IColumn & column, Columns & holder)
+{
+    holder.push_back(column.convertToFullIfWrapped());
+    const auto & tuple = assert_cast<const ColumnTuple &>(*holder.back());
+
+    ColumnRawPtrs elements;
+    elements.reserve(tuple.tupleSize());
+    for (size_t i = 0; i < tuple.tupleSize(); ++i)
+    {
+        holder.push_back(recursiveRemoveLowCardinality(tuple.getColumnPtr(i)));
+        elements.push_back(holder.back().get());
+    }
+    return elements;
+}
+
+
 DataTypes Set::getElementTypes(DataTypes types, bool transform_null_in)
 {
     for (auto & type : types)
@@ -460,8 +478,54 @@ void Set::setHeader(const ColumnsWithTypeAndName & header)
         extractNestedColumnsAndNullMap(key_columns, null_map);
     }
 
+    /// A `ColumnTuple` is not fixed and contiguous even when its elements are, so `SetVariants::chooseMethod`
+    /// would choose the `hashed` method, which hashes each tuple with `SipHash`. Instead, the elements become
+    /// the key columns of the table when they fit the key of `keys256` (see `split_tuple_key`). As in
+    /// `chooseMethod`, the columns are checked rather than their types. A `Nullable` element is not fixed and
+    /// contiguous, so its tuple keeps the `hashed` method, which compares a `NULL` element as a value.
+    Columns tuple_elements_holder;
+    if (keys_size == 1 && typeid_cast<const DataTypeTuple *>(data_types.front().get()))
+    {
+        ColumnRawPtrs tuple_elements = getTupleKeyElements(*key_columns.front(), tuple_elements_holder);
+
+        bool all_fixed = !tuple_elements.empty();
+        size_t elements_bytes = 0;
+        for (const auto * element : tuple_elements)
+        {
+            if (!element->isFixedAndContiguous())
+            {
+                all_fixed = false;
+                break;
+            }
+            elements_bytes += element->sizeOfValueIfFixed();
+        }
+
+        if (all_fixed && elements_bytes <= sizeof(UInt256))
+        {
+            split_tuple_key = true;
+            key_columns = std::move(tuple_elements);
+        }
+    }
+
     /// Choose data structure to use for the set.
     data->init(SetVariants::chooseMethod(key_columns, key_sizes));
+}
+
+ColumnRawPtrs Set::getTableKeyColumns(const ColumnRawPtrs & key_columns, Columns & holder) const
+{
+    if (!split_tuple_key)
+        return key_columns;
+
+    chassert(key_columns.size() == 1);
+    return getTupleKeyElements(*key_columns.front(), holder);
+}
+
+DataTypes Set::getTableKeyTypes() const
+{
+    if (!split_tuple_key)
+        return data_types;
+
+    return assert_cast<const DataTypeTuple &>(*recursiveRemoveLowCardinality(data_types.front())).getElements();
 }
 
 void Set::fillSetElements()
@@ -537,12 +601,16 @@ bool Set::insertFromColumnsImpl(const Columns & columns, SetKeyColumns & holder)
     if (!transform_null_in)
         null_map_holder = extractNestedColumnsAndNullMap(holder.key_columns, null_map);
 
-    if (!disk_set_builder && isSpillNeededBeforeInsert(holder.key_columns, rows))
+    /// The explicit elements and the callers that read `holder` keep the key columns of the set.
+    Columns table_key_columns_holder;
+    const ColumnRawPtrs table_key_columns = getTableKeyColumns(holder.key_columns, table_key_columns_holder);
+
+    if (!disk_set_builder && isSpillNeededBeforeInsert(table_key_columns, rows))
         spillWhileBuilding("the projected growth of the set exceeds the memory left under the spill threshold");
 
     if (disk_set_builder)
     {
-        auto keys = compute_disk_set_keys(holder.key_columns, key_sizes, rows, null_map);
+        auto keys = compute_disk_set_keys(table_key_columns, key_sizes, rows, null_map);
         if (!keys->empty())
             disk_set_builder->add(std::move(keys));
         return true;
@@ -550,7 +618,7 @@ bool Set::insertFromColumnsImpl(const Columns & columns, SetKeyColumns & holder)
 
     data->callOnMethod([&](auto & method)
     {
-        insertFromBlockImpl(method, holder.key_columns, rows, *data, null_map, holder.filter ? &holder.filter->getData() : nullptr);
+        insertFromBlockImpl(method, table_key_columns, rows, *data, null_map, holder.filter ? &holder.filter->getData() : nullptr);
     });
 
     bool within_limits = limits.check(data->getTotalRowCount(), data->getTotalByteCount(), "IN-set", ErrorCodes::SET_SIZE_LIMIT_EXCEEDED);
@@ -904,13 +972,16 @@ ColumnPtr Set::execute(const ColumnsWithTypeAndName & columns, bool negative) co
     if (!transform_null_in)
         null_map_holder = extractNestedColumnsAndNullMap(key_columns, null_map);
 
+    Columns table_key_columns_holder;
+    const ColumnRawPtrs table_key_columns = getTableKeyColumns(key_columns, table_key_columns_holder);
+
     if (disk_set)
     {
-        executeDiskSet(key_columns, vec_res, negative, null_map);
+        executeDiskSet(table_key_columns, vec_res, negative, null_map);
         return res;
     }
 
-    data->callOnMethod([&](auto & method) { executeImpl(method, key_columns, vec_res, negative, vec_res.size(), null_map); });
+    data->callOnMethod([&](auto & method) { executeImpl(method, table_key_columns, vec_res, negative, vec_res.size(), null_map); });
 
     /// The set is usually built before the rest of the query takes its memory, so it also spills while it is
     /// used. Spilling takes the lock exclusively, so this lookup releases its shared lock first.

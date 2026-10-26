@@ -179,6 +179,14 @@ private:
     size_t keys_size = 0;
     Sizes key_sizes;
 
+    /// Whether the set has a single key column of a `Tuple` type whose elements are the key columns of the
+    /// table, which happens when the elements without `LowCardinality` have fixed-size values without `NULL`,
+    /// at most 32 bytes in total, as in `Tuple(UInt64, UUID)`. The table then packs the elements into one
+    /// integer, as it does for several key columns, instead of hashing each tuple with `SipHash` in the
+    /// `hashed` method. Only the table and the disk set see the elements: `data_types`, the explicit elements
+    /// and the null map keep the tuple (see `getTableKeyColumns`).
+    bool split_tuple_key = false;
+
     /// This holds the keys in memory. Spilling releases the table and its arena. Spilling while the set is
     /// used changes how the set stores its keys but not which keys it has, so `execute` stays `const`, and
     /// the members that `spillAfterBuild` replaces are `mutable`.
@@ -252,6 +260,14 @@ private:
 
     bool insertFromColumnsImpl(const Columns & columns, SetKeyColumns & holder);
     ProcessorMemoryStats getMemoryStatsUnlocked() const;
+
+    /// Returns the key columns of the table for the key columns of the set, `key_columns`, after the null
+    /// map is extracted from them: the elements of the tuple with `split_tuple_key`, as full columns without
+    /// `LowCardinality`, which `holder` keeps, and `key_columns` otherwise.
+    ColumnRawPtrs getTableKeyColumns(const ColumnRawPtrs & key_columns, Columns & holder) const;
+
+    /// Returns the types of the key columns of the table (see `getTableKeyColumns`).
+    DataTypes getTableKeyTypes() const;
 
     template <typename Method>
     void insertFromBlockImpl(

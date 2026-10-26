@@ -1,0 +1,29 @@
+<test>
+    <!--
+        The set of `IN` has a single key column of type `Tuple(UInt64, LowCardinality(UUID))`, the type of the
+        identifiers of the series of a `TimeSeries` table, whose PromQL selector filters with
+        `id IN (SELECT id ...)`. The elements of the tuple take 24 bytes, so the set keys them as separate
+        columns with the `keys256` method instead of hashing each tuple with `SipHash` in the `hashed` method.
+        The table has 20M rows with 1M distinct identifiers in random order.
+    -->
+    <create_query>
+        CREATE TABLE set_tuple_ids (id Tuple(UInt64, LowCardinality(UUID)), v UInt64) ENGINE = MergeTree ORDER BY v
+    </create_query>
+    <fill_query>
+        INSERT INTO set_tuple_ids
+        SELECT (k, reinterpretAsUUID(sipHash128(k % 1000))), number
+        FROM (SELECT number, intHash64(number) % 1000000 AS k FROM numbers_mt(20000000))
+    </fill_query>
+    <fill_query>OPTIMIZE TABLE set_tuple_ids FINAL</fill_query>
+
+    <!-- The set takes the 630K identifiers of 1M rows, and 20M rows look them up. -->
+    <query>SELECT count() FROM set_tuple_ids WHERE id IN (SELECT id FROM set_tuple_ids WHERE v &lt; 1000000)</query>
+    <!-- The set takes 10K identifiers, and 20M rows look them up. -->
+    <query>SELECT count() FROM set_tuple_ids WHERE id IN (SELECT id FROM set_tuple_ids WHERE v &lt; 10000)</query>
+    <query>SELECT count() FROM set_tuple_ids WHERE id NOT IN (SELECT id FROM set_tuple_ids WHERE v &lt; 10000)</query>
+
+    <!-- `Tuple(UInt32, UInt8)` takes 5 bytes, which the `keys64` method packs. -->
+    <query>SELECT count() FROM numbers_mt(20000000) WHERE (toUInt32(intHash32(number) % 2000000), toUInt8(number % 7)) IN (SELECT (toUInt32(number), toUInt8(number % 7)) FROM numbers(1000000))</query>
+
+    <drop_query>DROP TABLE IF EXISTS set_tuple_ids</drop_query>
+</test>

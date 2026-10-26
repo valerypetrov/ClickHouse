@@ -50,9 +50,10 @@
         every row.
 
         The subquery returning a single `Tuple(UInt64, UUID)` column keeps the left-hand tuple as
-        one `ColumnTuple` key (`in` decomposes it only when the set has multiple key types), so
-        `SetVariants::chooseMethod` picks `SetMethodHashed`, which skips the SipHash128 via the
-        raw-key-bytes comparison with the last processed row.
+        one `ColumnTuple` key (`in` decomposes it only when the set has multiple key types). The
+        elements of the tuple have fixed-size values, so the set keys them as separate columns,
+        and `SetVariants::chooseMethod` picks `keys256` (`SetMethodKeysFixed`) rather than
+        `SetMethodHashed`, as for the two-column subquery below.
     -->
     <query>SELECT count() FROM t_in_clustered WHERE (k, u) IN (SELECT (k, u) FROM t_in_clustered)</query>
     <query>SELECT count() FROM t_in_unclustered WHERE (k, u) IN (SELECT (k, u) FROM t_in_unclustered)</query>
