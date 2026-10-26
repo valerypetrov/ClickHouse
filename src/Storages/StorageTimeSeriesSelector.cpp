@@ -1143,7 +1143,11 @@ void StorageTimeSeriesSelector::readImpl(
         /// The `id IN <tags subquery>` condition stays in the WHERE for exact row-level filtering,
         /// but its set is excluded from the primary-key index analysis: `KeyCondition` would run an expensive
         /// exclusion search with the whole set, while the range conditions select the same granules cheaply.
-        modified_context->setSetting("use_index_for_in_with_subqueries_max_values", UInt64{1});
+        /// The id set is the only set built from a subquery in the generated query, so this excludes exactly it.
+        /// Limiting `use_index_for_in_with_subqueries_max_values` instead would also exclude the literal sets
+        /// of the matchers in the tags subquery, e.g. `tags['job'] IN ('a', 'b')` made from `job=~"a|b"`,
+        /// so the text index on tags could not serve them, unlike the same matcher written with `=`.
+        modified_context->setSetting("use_index_for_in_with_subqueries", false);
         LOG_DEBUG(log, "Selector {} matches the whole metric: adding a primary-key range on id and excluding the id set from index analysis",
                   quoteString(config.selector.toString()));
     }

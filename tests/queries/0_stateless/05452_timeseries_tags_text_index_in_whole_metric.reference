@@ -1,0 +1,17 @@
+Map column
+20	280
+20	280
+timeSeriesSelector
+1	1
+1
+2
+3
+1
+2
+3
+2
+2
+postings read
+text_index_in_map	1
+text_index_in_selector_partial	1
+text_index_in_selector_whole_metric	1

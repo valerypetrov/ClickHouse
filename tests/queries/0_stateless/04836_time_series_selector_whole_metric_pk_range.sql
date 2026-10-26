@@ -6,7 +6,7 @@
 -- all series of one metric occupy one continuous primary-key range. When a selector matches the WHOLE
 -- metric (verified by a probe on the tags table at query build time), the generated WHERE additionally
 -- carries `id >= tuple(hash('metric'), min) AND id <= tuple(hash('metric'), max)` and the id set is
--- excluded from primary-key index analysis (`use_index_for_in_with_subqueries_max_values = 1`): index
+-- excluded from primary-key index analysis (`use_index_for_in_with_subqueries = 0`): index
 -- analysis then works on the continuous range instead of running a generic exclusion search with the
 -- whole set. The `id IN <set>` condition always stays in the WHERE, so the returned rows never change.
 -- The range is wrapped in `indexHint`, so it reaches index analysis without being evaluated per
@@ -161,8 +161,7 @@ FROM (SELECT arrayStringConcat(groupArray(explain), '\n') AS plan FROM (EXPLAIN 
 SELECT '-- the index-only range still drops the part that holds another metric';
 
 -- Two parts, one metric each: `max_bytes_to_merge_at_max_space_in_pool = 1` keeps them apart.
--- `foo` has two series, so its id set holds two values and
--- `use_index_for_in_with_subqueries_max_values = 1` excludes it from index analysis: the range is
+-- `use_index_for_in_with_subqueries = 0` excludes the id set of `foo` from index analysis: the range is
 -- then the only condition that can drop the `bar` part, which `id_set_not_in_index_analysis`
 -- asserts rather than assumes.
 CREATE TABLE ts_prune ENGINE = TimeSeries TAGS INNER COLUMNS (id Tuple(UInt64, UUID))
