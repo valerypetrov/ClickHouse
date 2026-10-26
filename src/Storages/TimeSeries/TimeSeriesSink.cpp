@@ -1,5 +1,6 @@
 #include <Storages/TimeSeries/TimeSeriesSink.h>
 
+#include <Access/Common/AccessFlags.h>
 #include <Columns/ColumnArray.h>
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnString.h>
@@ -361,10 +362,16 @@ void TimeSeriesSink::insertSortedTagsToColumns(
 }
 
 
-void TimeSeriesSink::TargetPipeline::push(Block block) const
+TimeSeriesSink::TargetPipeline::TargetPipeline(ViewTarget::Kind kind_, const StorageID & table_id_, const Block & header_)
+    : kind(kind_), table_id(table_id_), header(header_)
 {
-    converting_actions->execute(block);
-    executor->push(std::move(block));
+}
+
+void TimeSeriesSink::TargetPipeline::finish() const
+{
+    /// Nothing to finish if nothing was pushed.
+    if (executor)
+        executor->finish();
 }
 
 TimeSeriesSink::TargetPipeline::~TargetPipeline()
@@ -396,46 +403,68 @@ ColumnPtr TimeSeriesSink::calculateId(const Block & tags_block) const
 
 
 std::unique_ptr<TimeSeriesSink::TargetPipeline> TimeSeriesSink::createTargetPipeline(
-    ViewTarget::Kind kind, const Block & header)
+    ViewTarget::Kind kind, const Block & header) const
 {
-    auto pipeline = std::make_unique<TargetPipeline>();
+    auto context = getContext();
+    auto target_table = time_series_storage.getTargetTable(kind, context);
 
-    const auto & target_table_id = time_series_storage.getTargetTableID(kind, getContext());
+    /// The pipeline is built by the first push, and then `InterpreterInsertQuery::execute` checks the access to the target table.
+    /// But an asynchronous insert creates this sink only to check the insert and never pushes anything to it: its data is inserted
+    /// by another sink in a background flush, maybe after the query has already returned success (with `wait_for_async_insert = 0`).
+    /// So the same checks are done here, when the sink is created.
+    context->checkAccess(AccessType::INSERT, target_table->getStorageID(), header.getNames());
+    target_table->checkInsertIsAllowed(context);
 
+    return std::make_unique<TargetPipeline>(kind, target_table->getStorageID(), header);
+}
+
+
+void TimeSeriesSink::startTargetPipeline(TargetPipeline & pipeline) const
+{
     auto insert_query = make_intrusive<ASTInsertQuery>();
-    insert_query->table_id = target_table_id;
+    insert_query->table_id = pipeline.table_id;
 
     auto columns_ast = make_intrusive<ASTExpressionList>();
-    for (const auto & name : header.getNames())
+    for (const auto & name : pipeline.header.getNames())
         columns_ast->children.emplace_back(make_intrusive<ASTIdentifier>(name));
     insert_query->columns = columns_ast;
 
-    pipeline->context = Context::createCopy(getContext());
-    pipeline->context->setCurrentQueryId(fmt::format("{}:{}", getContext()->getCurrentQueryId(), kind));
+    pipeline.context = Context::createCopy(getContext());
+    pipeline.context->setCurrentQueryId(fmt::format("{}:{}", getContext()->getCurrentQueryId(), pipeline.kind));
 
     InterpreterInsertQuery interpreter(
         insert_query,
-        pipeline->context,
+        pipeline.context,
         /* allow_materialized= */ true,
         /* no_squash= */ false,
         /* no_destination= */ false,
         async_insert);
 
-    pipeline->io = interpreter.execute();
-    pipeline->executor = std::make_unique<PushingPipelineExecutor>(pipeline->io.pipeline);
-    pipeline->executor->start();
+    pipeline.io = interpreter.execute();
+    pipeline.executor = std::make_unique<PushingPipelineExecutor>(pipeline.io.pipeline);
+    pipeline.executor->start();
 
     /// Precompute converting actions from our source block types to the pipeline's expected types.
-    const Block & target_header = pipeline->executor->getHeader();
+    const Block & target_header = pipeline.executor->getHeader();
     auto converting_dag = ActionsDAG::makeConvertingActions(
-        header.getColumnsWithTypeAndName(),
+        pipeline.header.getColumnsWithTypeAndName(),
         target_header.getColumnsWithTypeAndName(),
         ActionsDAG::MatchColumnsMode::Name,
-        pipeline->context);
-    pipeline->converting_actions = std::make_shared<ExpressionActions>(
-        std::move(converting_dag), ExpressionActionsSettings(pipeline->context));
+        pipeline.context);
+    pipeline.converting_actions = std::make_shared<ExpressionActions>(
+        std::move(converting_dag), ExpressionActionsSettings(pipeline.context));
+}
 
-    return pipeline;
+
+void TimeSeriesSink::pushToTarget(TargetPipeline & pipeline, Block block) const
+{
+    /// Building the pipeline is postponed until there is something to insert: e.g. an asynchronous insert
+    /// creates a sink and destroys it without inserting anything, see `createTargetPipeline`.
+    if (!pipeline.executor)
+        startTargetPipeline(pipeline);
+
+    pipeline.converting_actions->execute(block);
+    pipeline.executor->push(std::move(block));
 }
 
 
@@ -766,7 +795,7 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
     /// Tags are pushed first so that if the samples insert fails,
     /// we don't end up with sample rows referencing IDs that were never written to the tags table.
     if (tags_block.rows())
-        tags_pipeline->push(std::move(tags_block));
+        pushToTarget(*tags_pipeline, std::move(tags_block));
 
     /// Step 5. Assemble and push the time ranges block.
     /// The time ranges are pushed before the samples: a time range without samples is harmless (the samples
@@ -791,7 +820,7 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
         time_ranges_block.insert(ColumnWithTypeAndName{std::move(min_time_column_for_time_ranges), timestamp_type, TimeSeriesColumnNames::MinTime});
         time_ranges_block.insert(ColumnWithTypeAndName{std::move(max_time_column_for_time_ranges), timestamp_type, TimeSeriesColumnNames::MaxTime});
 
-        time_ranges_pipeline->push(std::move(time_ranges_block));
+        pushToTarget(*time_ranges_pipeline, std::move(time_ranges_block));
     }
 
     /// Step 6. Assemble and push the samples block.
@@ -823,10 +852,10 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
         /// invisible until the TTL window slides past it. With the opposite order the sample would be
         /// visible in the TTL window and then disappear, which looks like data loss.
         /// The copy is cheap: a Block copy only copies column pointers.
-        samples_pipeline->push(samples_block);
+        pushToTarget(*samples_pipeline, samples_block);
 
         if (recent_samples_pipeline)
-            recent_samples_pipeline->push(std::move(samples_block));
+            pushToTarget(*recent_samples_pipeline, std::move(samples_block));
     }
 }
 
@@ -898,7 +927,7 @@ void TimeSeriesSink::consumeMetricFamilies(const Block & block)
     if (!metric_families_block.rows())
         return;
 
-    metric_families_pipeline->push(std::move(metric_families_block));
+    pushToTarget(*metric_families_pipeline, std::move(metric_families_block));
 }
 
 
@@ -906,20 +935,20 @@ void TimeSeriesSink::onFinish()
 {
     if (tags_pipeline)
     {
-        tags_pipeline->executor->finish();
+        tags_pipeline->finish();
         /// The pending rows are in the table for sure now.
         if (tags_deduplication_cache && !pending_tags.empty())
             tags_deduplication_cache->markRowsAsWritten(std::move(pending_tags));
     }
     if (time_ranges_pipeline)
-        time_ranges_pipeline->executor->finish();
+        time_ranges_pipeline->finish();
     if (samples_pipeline)
-        samples_pipeline->executor->finish();
+        samples_pipeline->finish();
     if (recent_samples_pipeline)
-        recent_samples_pipeline->executor->finish();
+        recent_samples_pipeline->finish();
     if (metric_families_pipeline)
     {
-        metric_families_pipeline->executor->finish();
+        metric_families_pipeline->finish();
         /// The pending rows are in the table for sure now.
         if (metric_families_deduplication_cache && !pending_metric_families.empty())
             metric_families_deduplication_cache->markRowsAsWritten(std::move(pending_metric_families));

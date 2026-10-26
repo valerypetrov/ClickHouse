@@ -4,6 +4,7 @@
 #include <Core/Block.h>
 #include <DataTypes/IDataType.h>
 #include <Interpreters/Context_fwd.h>
+#include <Interpreters/StorageID.h>
 #include <Parsers/ASTViewTargets.h>
 #include <Processors/Sinks/SinkToStorage.h>
 #include <QueryPipeline/BlockIO.h>
@@ -60,20 +61,32 @@ public:
 
 private:
     /// A persistent pipeline for inserting blocks into one target table.
+    /// The access to the target table is checked when the sink is created (see `createTargetPipeline`),
+    /// but the pipeline itself is built by the first push (see `startTargetPipeline`).
     struct TargetPipeline
     {
+        TargetPipeline(ViewTarget::Kind kind_, const StorageID & table_id_, const Block & header_);
+
+        const ViewTarget::Kind kind;
+        const StorageID table_id;
+        /// The header of the blocks pushed to this pipeline.
+        const Block header;
+
+        /// These fields are set by the first push.
         ContextMutablePtr context;
         BlockIO io;
         std::unique_ptr<PushingPipelineExecutor> executor;
         std::shared_ptr<ExpressionActions> converting_actions;
 
-        void push(Block block) const;
+        void finish() const;
         ~TargetPipeline();
     };
 
     void initTagsAndSamplesPipelines();
     void initMetricFamiliesPipeline();
-    std::unique_ptr<TargetPipeline> createTargetPipeline(ViewTarget::Kind kind, const Block & header);
+    std::unique_ptr<TargetPipeline> createTargetPipeline(ViewTarget::Kind kind, const Block & header) const;
+    void startTargetPipeline(TargetPipeline & pipeline) const;
+    void pushToTarget(TargetPipeline & pipeline, Block block) const;
 
     void consumeTagsAndSamples(const Block & block);
     void consumeMetricFamilies(const Block & block);
@@ -102,6 +115,7 @@ private:
     std::shared_ptr<ExpressionActions> calculate_id_actions;
     std::shared_ptr<ExpressionActions> convert_id_actions;
 
+    /// Null if this insert doesn't write to the corresponding target table.
     std::unique_ptr<TargetPipeline> tags_pipeline;
     std::unique_ptr<TargetPipeline> time_ranges_pipeline;
     std::unique_ptr<TargetPipeline> samples_pipeline;
