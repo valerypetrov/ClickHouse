@@ -567,11 +567,12 @@ namespace
                                         "tags_deduplication_cache_size_bytes", "tags_deduplication_cache_expiration_seconds"});
 
         /// The time range of a time series is stored in the "time ranges" table, tables of earlier versions store it in the "tags" table
-        /// (see TimeSeriesVersion.h), so the settings of the other form aren't copied.
+        /// (see TimeSeriesVersion.h), so the settings of the other form aren't copied, including the settings of the "time ranges" table.
         if (new_version >= TimeSeriesVersion::MIN_WITH_TIME_RANGES_TARGET)
             old_settings.removeSettings({"store_min_time_and_max_time", "aggregate_min_time_and_max_time", "filter_by_min_time_and_max_time"});
         else
-            old_settings.removeSetting("store_time_ranges");
+            old_settings.removeSettings({"store_time_ranges", "time_ranges_bucket_seconds",
+                                        "time_ranges_deduplication_cache_size_bytes", "time_ranges_deduplication_cache_expiration_seconds"});
 
         /// The default value of `recent_samples_ttl_seconds` is 345600 (4 days), so an absent setting doesn't disable the recent samples table.
         if (const auto * value = get_new_value("recent_samples_ttl_seconds"); value && (SettingFieldUInt64{*value}.value == 0))

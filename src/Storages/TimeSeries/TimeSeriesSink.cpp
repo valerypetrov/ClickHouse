@@ -4,10 +4,14 @@
 #include <Columns/ColumnMap.h>
 #include <Columns/ColumnString.h>
 #include <Columns/ColumnTuple.h>
+#include <Columns/ColumnsDateTime.h>
+#include <Columns/ColumnsNumber.h>
+#include <Common/assert_cast.h>
 #include <Common/logger_useful.h>
 #include <Common/typeid_cast.h>
 #include <Core/Field.h>
 #include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeDateTime64.h>
 #include <DataTypes/DataTypeLowCardinality.h>
 #include <DataTypes/DataTypeMap.h>
 #include <DataTypes/DataTypeNullable.h>
@@ -41,10 +45,12 @@ namespace TimeSeriesSetting
 {
     extern const TimeSeriesSettingsASTFunction id_generator;
     extern const TimeSeriesSettingsMap tags_to_columns;
+    extern const TimeSeriesSettingsUInt64 time_ranges_bucket_seconds;
 }
 
 namespace ErrorCodes
 {
+    extern const int BAD_TYPE_OF_FIELD;
     extern const int ILLEGAL_COLUMN;
     extern const int ILLEGAL_TIME_SERIES_TAGS;
     extern const int INCORRECT_DATA;
@@ -140,6 +146,61 @@ namespace
 
             ++id_index;
         }
+    }
+
+    /// Rounds `value` down to a multiple of `bucket`, or returns the lowest value of `T` if that multiple doesn't fit into `T`.
+    template <typename T>
+    T roundDownToBucket(T value, Int128 bucket)
+    {
+        /// The division rounds towards zero.
+        Int128 rounded = Int128(value) / bucket * bucket;
+        if (rounded > Int128(value))
+            rounded -= bucket;
+        return static_cast<T>(std::max<Int128>(rounded, std::numeric_limits<T>::lowest()));
+    }
+
+    /// Returns the least multiple of `bucket` greater than `value`, or the maximum value of `T` if that multiple doesn't fit into `T`.
+    template <typename T>
+    T roundUpToNextBucket(T value, Int128 bucket)
+    {
+        /// The division rounds towards zero.
+        Int128 rounded = Int128(value) / bucket * bucket;
+        if (rounded <= Int128(value))
+            rounded += bucket;
+        return static_cast<T>(std::min<Int128>(rounded, std::numeric_limits<T>::max()));
+    }
+
+    /// Widens the time ranges in the columns min_time and max_time for the "time ranges" table to whole buckets of `bucket_seconds`
+    /// seconds counted from the Unix epoch, so that the result doesn't depend on any timezone: `min_time` is rounded down to the start
+    /// of its bucket and `max_time` up to the end of its bucket (the start of the next one), so all the timestamps of one bucket give
+    /// the same time range. The bounds are rounded independently, so a time range spanning several buckets covers all of them.
+    /// A time range is never narrowed: a bound which can't be rounded within its type is set to the limit of the type.
+    void roundTimeRangesToBuckets(IColumn & min_time_column, IColumn & max_time_column, const IDataType & timestamp_type, UInt64 bucket_seconds)
+    {
+        chassert(bucket_seconds);
+        if (const auto * datetime64_type = typeid_cast<const DataTypeDateTime64 *>(&timestamp_type))
+        {
+            /// The product fits into Int128: the scale multiplier of DateTime64 is less than 2^63.
+            Int128 bucket = Int128(bucket_seconds) * datetime64_type->getScaleMultiplier().value;
+            for (auto & min_time : assert_cast<ColumnDateTime64 &>(min_time_column).getData())
+                min_time.value = roundDownToBucket(min_time.value, bucket);
+            for (auto & max_time : assert_cast<ColumnDateTime64 &>(max_time_column).getData())
+                max_time.value = roundUpToNextBucket(max_time.value, bucket);
+            return;
+        }
+
+        WhichDataType which{timestamp_type};
+        if (which.isDateTime() || which.isUInt32())
+        {
+            Int128 bucket = Int128(bucket_seconds);
+            for (auto & min_time : assert_cast<ColumnUInt32 &>(min_time_column).getData())
+                min_time = roundDownToBucket(min_time, bucket);
+            for (auto & max_time : assert_cast<ColumnUInt32 &>(max_time_column).getData())
+                max_time = roundUpToNextBucket(max_time, bucket);
+            return;
+        }
+
+        throw Exception(ErrorCodes::BAD_TYPE_OF_FIELD, "Unexpected type {} of timestamps", timestamp_type.getName());
     }
 
     /// Fills columns min_time and max_time for the "tags" table (tables of earlier versions).
@@ -613,6 +674,7 @@ void TimeSeriesSink::initTagsAndSamplesPipelines()
         time_ranges_header.insert(ColumnWithTypeAndName{timestamp_type, TimeSeriesColumnNames::MinTime});
         time_ranges_header.insert(ColumnWithTypeAndName{timestamp_type, TimeSeriesColumnNames::MaxTime});
         time_ranges_pipeline = createTargetPipeline(ViewTarget::TimeRanges, time_ranges_header);
+        time_ranges_deduplication_cache = time_series_storage.getTimeRangesDeduplicationCache();
     }
 
     /// Build source header for samples block.
@@ -768,10 +830,11 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
     if (tags_block.rows())
         tags_pipeline->push(std::move(tags_block));
 
-    /// Step 5. Assemble and push the time ranges block.
+    /// Step 5. Assemble and push the time ranges block without the time ranges already written to the "time ranges" table.
     /// The time ranges are pushed before the samples: a time range without samples is harmless (the samples
     /// are filtered by their timestamps anyway), while samples outside of the stored time range of their
-    /// time series would be invisible to queries filtering time series by time.
+    /// time series would be invisible to queries filtering time series by time. For the same reason a time range
+    /// can be widened to whole buckets: then the inserts within one bucket write the same time range, and the cache skips it.
     if (time_ranges_pipeline && total_samples)
     {
         auto time_ranges_id_column = id_type->createColumn();
@@ -786,12 +849,20 @@ void TimeSeriesSink::consumeTagsAndSamples(const Block & block)
             *id_column, ts_offsets, ts_timestamps,
             *time_ranges_id_column, *min_time_column_for_time_ranges, *max_time_column_for_time_ranges);
 
+        if (UInt64 bucket_seconds = settings[TimeSeriesSetting::time_ranges_bucket_seconds])
+            roundTimeRangesToBuckets(*min_time_column_for_time_ranges, *max_time_column_for_time_ranges, *timestamp_type, bucket_seconds);
+
         Block time_ranges_block;
         time_ranges_block.insert(ColumnWithTypeAndName{std::move(time_ranges_id_column), id_type, TimeSeriesColumnNames::ID});
         time_ranges_block.insert(ColumnWithTypeAndName{std::move(min_time_column_for_time_ranges), timestamp_type, TimeSeriesColumnNames::MinTime});
         time_ranges_block.insert(ColumnWithTypeAndName{std::move(max_time_column_for_time_ranges), timestamp_type, TimeSeriesColumnNames::MaxTime});
 
-        time_ranges_pipeline->push(std::move(time_ranges_block));
+        if (time_ranges_deduplication_cache)
+            time_ranges_block = time_ranges_deduplication_cache->filterOutWrittenRows(
+                time_ranges_block, /* key_column_index = */ time_ranges_block.getPositionByName(TimeSeriesColumnNames::ID), pending_time_ranges);
+
+        if (time_ranges_block.rows())
+            time_ranges_pipeline->push(std::move(time_ranges_block));
     }
 
     /// Step 6. Assemble and push the samples block.
@@ -912,7 +983,12 @@ void TimeSeriesSink::onFinish()
             tags_deduplication_cache->markRowsAsWritten(std::move(pending_tags));
     }
     if (time_ranges_pipeline)
+    {
         time_ranges_pipeline->executor->finish();
+        /// The pending rows are in the table for sure now.
+        if (time_ranges_deduplication_cache && !pending_time_ranges.empty())
+            time_ranges_deduplication_cache->markRowsAsWritten(std::move(pending_time_ranges));
+    }
     if (samples_pipeline)
         samples_pipeline->executor->finish();
     if (recent_samples_pipeline)

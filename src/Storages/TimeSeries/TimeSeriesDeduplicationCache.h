@@ -18,7 +18,8 @@ namespace DB
 class Block;
 
 /// Remembers the rows recently written to a target table of a TimeSeries table, so that the same rows
-/// aren't written with every insert (the description of a metric family and the tags of a time series arrive with every scrape).
+/// aren't written with every insert (the description of a metric family and the tags of a time series arrive with every scrape,
+/// and the time range of a time series rounded to buckets stays the same for many scrapes).
 ///
 /// A row is identified by its key column, and the cache remembers the latest row of each key as the hash of all its values.
 /// A row with a changed value is written and replaces the remembered one, so the target table gets the changes in their order.

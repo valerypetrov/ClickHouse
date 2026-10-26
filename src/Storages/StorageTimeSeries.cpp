@@ -45,6 +45,8 @@ namespace CurrentMetrics
     extern const Metric TimeSeriesMetricFamiliesDeduplicationCacheBytes;
     extern const Metric TimeSeriesTagsDeduplicationCacheEntries;
     extern const Metric TimeSeriesTagsDeduplicationCacheBytes;
+    extern const Metric TimeSeriesTimeRangesDeduplicationCacheEntries;
+    extern const Metric TimeSeriesTimeRangesDeduplicationCacheBytes;
 }
 
 namespace ProfileEvents
@@ -53,6 +55,8 @@ namespace ProfileEvents
     extern const Event TimeSeriesMetricFamiliesDeduplicationCacheMisses;
     extern const Event TimeSeriesTagsDeduplicationCacheHits;
     extern const Event TimeSeriesTagsDeduplicationCacheMisses;
+    extern const Event TimeSeriesTimeRangesDeduplicationCacheHits;
+    extern const Event TimeSeriesTimeRangesDeduplicationCacheMisses;
 }
 
 namespace DB
@@ -68,6 +72,9 @@ namespace TimeSeriesSetting
     extern const TimeSeriesSettingsUInt64 metric_families_deduplication_cache_size_bytes;
     extern const TimeSeriesSettingsUInt64 tags_deduplication_cache_expiration_seconds;
     extern const TimeSeriesSettingsUInt64 tags_deduplication_cache_size_bytes;
+    extern const TimeSeriesSettingsUInt64 time_ranges_bucket_seconds;
+    extern const TimeSeriesSettingsUInt64 time_ranges_deduplication_cache_expiration_seconds;
+    extern const TimeSeriesSettingsUInt64 time_ranges_deduplication_cache_size_bytes;
     extern const TimeSeriesSettingsUInt64 version;
 }
 
@@ -98,6 +105,7 @@ namespace
 
     /// Only the settings which don't affect the stored data can be altered
     /// (`id_generator` and `filter_by_min_time_and_max_time` apply to tables of earlier versions, see checkTimeSeriesSettings).
+    /// `time_ranges_bucket_seconds` changes only the rounding of the time ranges written afterwards, the stored ones stay valid.
     void checkSettingCanBeAltered(std::string_view setting_name, std::string_view storage_name)
     {
         if ((setting_name != "id_generator")
@@ -105,7 +113,10 @@ namespace
             && (setting_name != "metric_families_deduplication_cache_size_bytes")
             && (setting_name != "metric_families_deduplication_cache_expiration_seconds")
             && (setting_name != "tags_deduplication_cache_size_bytes")
-            && (setting_name != "tags_deduplication_cache_expiration_seconds"))
+            && (setting_name != "tags_deduplication_cache_expiration_seconds")
+            && (setting_name != "time_ranges_bucket_seconds")
+            && (setting_name != "time_ranges_deduplication_cache_size_bytes")
+            && (setting_name != "time_ranges_deduplication_cache_expiration_seconds"))
             throw Exception(ErrorCodes::NOT_IMPLEMENTED,
                 "Setting '{}' of storage {} cannot be changed after the table is created", setting_name, storage_name);
     }
@@ -254,6 +265,7 @@ StorageTimeSeries::StorageTimeSeries(
     has_inner_tables = std::ranges::any_of(targets, &Target::is_inner_table);
     storage_settings.set(std::move(settings));
     createOrDropTagsDeduplicationCache();
+    createOrDropTimeRangesDeduplicationCache();
     createOrDropMetricFamiliesDeduplicationCache();
 
     if (!comment.empty())
@@ -429,6 +441,39 @@ void StorageTimeSeries::createOrDropTagsDeduplicationCache()
         ProfileEvents::TimeSeriesTagsDeduplicationCacheMisses);
 }
 
+void StorageTimeSeries::createOrDropTimeRangesDeduplicationCache()
+{
+    std::lock_guard lock{caches_mutex};
+
+    /// The settings are read under the mutex, so that the cache updated last follows the settings published last.
+    auto settings_ptr = storage_settings.get();
+    const auto & settings = *settings_ptr;
+
+    size_t max_size_bytes = settings[TimeSeriesSetting::time_ranges_deduplication_cache_size_bytes];
+    UInt64 expiration_seconds = settings[TimeSeriesSetting::time_ranges_deduplication_cache_expiration_seconds];
+    UInt64 bucket_seconds = settings[TimeSeriesSetting::time_ranges_bucket_seconds];
+
+    /// The cache is used only by supported versions with the time ranges table. Without rounding to buckets
+    /// almost every insert changes the time range of a time series, so the cache would only waste memory.
+    UInt64 version = settings[TimeSeriesSetting::version];
+    bool enabled = isTimeSeriesVersionSupported(version) && settings.isTimeRangesTargetEnabled()
+        && bucket_seconds && max_size_bytes && expiration_seconds;
+    if (!enabled)
+    {
+        time_ranges_deduplication_cache = nullptr;
+        return;
+    }
+
+    /// A new cache replaces the old one, the running inserts continue with the old one.
+    time_ranges_deduplication_cache = std::make_shared<TimeSeriesDeduplicationCache>(
+        max_size_bytes,
+        expiration_seconds,
+        CurrentMetrics::TimeSeriesTimeRangesDeduplicationCacheEntries,
+        CurrentMetrics::TimeSeriesTimeRangesDeduplicationCacheBytes,
+        ProfileEvents::TimeSeriesTimeRangesDeduplicationCacheHits,
+        ProfileEvents::TimeSeriesTimeRangesDeduplicationCacheMisses);
+}
+
 void StorageTimeSeries::createOrDropMetricFamiliesDeduplicationCache()
 {
     std::lock_guard lock{caches_mutex};
@@ -466,6 +511,12 @@ TimeSeriesDeduplicationCachePtr StorageTimeSeries::getTagsDeduplicationCache() c
     return tags_deduplication_cache;
 }
 
+TimeSeriesDeduplicationCachePtr StorageTimeSeries::getTimeRangesDeduplicationCache() const
+{
+    std::lock_guard lock{caches_mutex};
+    return time_ranges_deduplication_cache;
+}
+
 TimeSeriesDeduplicationCachePtr StorageTimeSeries::getMetricFamiliesDeduplicationCache() const
 {
     std::lock_guard lock{caches_mutex};
@@ -476,6 +527,7 @@ void StorageTimeSeries::clearCaches()
 {
     checkTimeSeriesVersionIsSupported(*this);
     createOrDropTagsDeduplicationCache();
+    createOrDropTimeRangesDeduplicationCache();
     createOrDropMetricFamiliesDeduplicationCache();
 }
 
@@ -736,6 +788,9 @@ void StorageTimeSeries::alter(const AlterCommands & params, ContextPtr local_con
         auto setting_changed = [&](const auto & setting) { return (*old_settings)[setting] != (*new_settings)[setting]; };
         bool tags_cache_changed = setting_changed(TimeSeriesSetting::tags_deduplication_cache_size_bytes)
             || setting_changed(TimeSeriesSetting::tags_deduplication_cache_expiration_seconds);
+        bool time_ranges_cache_changed = setting_changed(TimeSeriesSetting::time_ranges_bucket_seconds)
+            || setting_changed(TimeSeriesSetting::time_ranges_deduplication_cache_size_bytes)
+            || setting_changed(TimeSeriesSetting::time_ranges_deduplication_cache_expiration_seconds);
         bool metric_families_cache_changed = setting_changed(TimeSeriesSetting::metric_families_deduplication_cache_size_bytes)
             || setting_changed(TimeSeriesSetting::metric_families_deduplication_cache_expiration_seconds);
 
@@ -743,6 +798,8 @@ void StorageTimeSeries::alter(const AlterCommands & params, ContextPtr local_con
 
         if (tags_cache_changed)
             createOrDropTagsDeduplicationCache();
+        if (time_ranges_cache_changed)
+            createOrDropTimeRangesDeduplicationCache();
         if (metric_families_cache_changed)
             createOrDropMetricFamiliesDeduplicationCache();
     }
@@ -1148,7 +1205,7 @@ of the _tags_ table instead of the separate [time ranges](#time-ranges-table) ta
 
 The _time ranges_ table is optional and enabled by default (see the [store_time_ranges](#settings) setting; setting it to `false` disables the table).
 It contains the time range (the minimum and the maximum timestamp) of each time series, which is used to filter time series by time:
-a query over a time range reads only the time series which have samples in that range.
+a query over a time range reads only the time series which have samples in that range (or near it, see the [time_ranges_bucket_seconds](#settings) setting).
 
 The _time ranges_ table must have columns:
 
@@ -1160,6 +1217,15 @@ The _time ranges_ table must have columns:
 
 Every insert writes the time range of the inserted samples of each time series to this table, and the inner _time ranges_ table
 uses the [AggregatingMergeTree](/reference/engines/table-engines/mergetree-family/aggregatingmergetree) engine to merge those ranges into one per time series.
+
+A time series scraped every few seconds gets a new time range with every insert. To avoid writing all of them, set the
+[time_ranges_bucket_seconds](#settings) setting, for example to `3600`: then the time ranges are widened to whole buckets of that many seconds
+counted from the Unix epoch (`min_time` is rounded down to the start of its bucket, `max_time` up to the end of its bucket),
+so the inserts of a time series within one bucket write the same time range, and only the first of them reaches the table:
+the deduplication cache of the `TimeSeries` table skips the others (see the `time_ranges_deduplication_cache_expiration_seconds` setting).
+A wider time range is still correct for queries reading samples, because the samples are filtered by their timestamps anyway,
+but the metadata endpoints of the Prometheus HTTP API (`/api/v1/series`, `/api/v1/labels` and `/api/v1/label/<name>/values`),
+which don't read samples, return the time series up to one bucket away from the requested time range.
 
 ### Metric families table {#metric-families-table}
 
@@ -1405,7 +1471,8 @@ to remove duplicates (tables of [version](#schema-versioning) 7 or earlier use [
 Most duplicates don't even reach the table: the deduplication cache of the `TimeSeries` table skips the time series written recently
 (see the `tags_deduplication_cache_expiration_seconds` setting; a table of version 7 or earlier uses this cache only if it doesn't store `min_time` and `max_time`, see the `store_min_time_and_max_time` setting);
 - the [time ranges](#time-ranges-table) table uses [AggregatingMergeTree](/reference/engines/table-engines/mergetree-family/aggregatingmergetree) because every insert writes the time range of the inserted samples
-and the ranges of the same time series must be merged into one;
+and the ranges of the same time series must be merged into one. If the time ranges are rounded to buckets (see the `time_ranges_bucket_seconds` setting),
+the deduplication cache of the `TimeSeries` table skips the time ranges written recently (see the `time_ranges_deduplication_cache_expiration_seconds` setting);
 - the [metric families](#metric-families-table) table uses [ReplacingMergeTree](/reference/engines/table-engines/mergetree-family/replacingmergetree) because the same data is often inserted multiple times to this table so we need a way
 to remove duplicates. Most duplicates don't even reach the table: the deduplication cache of the `TimeSeries` table skips the metric families
 written recently (see the `metric_families_deduplication_cache_expiration_seconds` setting).
@@ -1466,6 +1533,7 @@ The following settings can be changed after `CREATE`:
 
 - `metric_families_deduplication_cache_size_bytes`, `metric_families_deduplication_cache_expiration_seconds`
 - `tags_deduplication_cache_size_bytes`, `tags_deduplication_cache_expiration_seconds`
+- `time_ranges_bucket_seconds`, `time_ranges_deduplication_cache_size_bytes`, `time_ranges_deduplication_cache_expiration_seconds`
 
 ```sql
 ALTER TABLE my_table MODIFY SETTING metric_families_deduplication_cache_expiration_seconds = 600;
@@ -1473,7 +1541,7 @@ ALTER TABLE my_table RESET SETTING metric_families_deduplication_cache_expiratio
 ```
 
 Changing a setting of a deduplication cache replaces the cache with an empty one, so the next insert writes all its rows again.
-Setting the size or the expiration to 0 disables the cache.
+Setting the size or the expiration to 0 disables the cache. Changing `time_ranges_bucket_seconds` affects only the time ranges written afterwards.
 
 <Note>
 Tables of earlier [versions](#schema-versioning) can also change the settings of those versions which don't affect the stored data:
@@ -1495,10 +1563,13 @@ Here is a list of settings which can be specified while defining a `TimeSeries` 
 | `version` | UInt64 | 10 | The version of the table: it identifies the set of the target tables and their structure. The version is pinned automatically when a table is created and can't be changed afterwards, normally it should be omitted in the `CREATE TABLE` query (see [Schema versioning](#schema-versioning)) |
 | `tags_to_columns` | Map | {} | Map specifying which tags should be put to separate columns in the [tags](#tags-table) table. Syntax: `{'tag1': 'column1', 'tag2' : column2, ...}` |
 | `store_time_ranges` | Bool | true | If set to true then the table stores the time range of each time series in the [time ranges](#time-ranges-table) table and uses it to filter time series by time. Set to false to disable the time ranges table. Not applicable to tables of [version](#schema-versioning) 7 or earlier, they use `store_min_time_and_max_time` instead |
+| `time_ranges_bucket_seconds` | UInt64 | 0 | If not zero, the time ranges written to the [time ranges](#time-ranges-table) table are widened to whole buckets of this many seconds counted from the Unix epoch: `min_time` is rounded down to the start of its bucket and `max_time` up to the end of its bucket (the start of the next one). So all the inserts of a time series within one bucket write the same time range, and only the first of them reaches the table (see `time_ranges_deduplication_cache_size_bytes`). A wider time range only makes the time series a candidate for more queries: the selectors still filter samples by their timestamps, but the Prometheus API endpoints `/api/v1/series`, `/api/v1/labels` and `/api/v1/label/<name>/values` return the time series up to one bucket away from the requested time range. Set to 0 to write the exact time ranges |
 | `metric_families_deduplication_cache_size_bytes` | UInt64 | 10485760 | Maximum size in bytes of the deduplication cache of the [metric families](#metric-families-table) table. The cache remembers the descriptions of the metric families written recently, so they aren't written again with every insert. When the cache is full, the entries used only once are evicted first, then the least recently used ones (SLRU). Set to 0 to disable the cache, see also `metric_families_deduplication_cache_expiration_seconds` |
 | `metric_families_deduplication_cache_expiration_seconds` | UInt64 | 3600 | Time after which an entry of the deduplication cache of the [metric families](#metric-families-table) table expires, counted from the moment the metric family was written. So every metric family is written again at least once per this period, which limits any difference between the cache and the table. The cache is local to the server and cleared by `TRUNCATE TABLE` executed on it or by `SYSTEM DROP TIME SERIES CACHES`. Set to 0 to disable the cache |
 | `tags_deduplication_cache_size_bytes` | UInt64 | 104857600 | Maximum size in bytes of the deduplication cache of the [tags](#tags-table) table. The cache remembers the time series written recently, so their tags aren't written again with every insert. When the cache is full, the entries used only once are evicted first, then the least recently used ones (SLRU). The cache is used only when the [tags](#tags-table) table doesn't store `min_time` and `max_time` (tables of [version](#schema-versioning) 7 or earlier store them unless `store_min_time_and_max_time` is disabled), because otherwise every insert changes these columns: the default value is ignored then, and an explicit non-zero value is rejected. Set to 0 to disable the cache, see also `tags_deduplication_cache_expiration_seconds` |
 | `tags_deduplication_cache_expiration_seconds` | UInt64 | 3600 | Time after which an entry of the deduplication cache of the [tags](#tags-table) table expires, counted from the moment the time series was written. So every time series is written again at least once per this period, which limits any difference between the cache and the table. The cache is local to the server and cleared by `TRUNCATE TABLE` executed on it or by `SYSTEM DROP TIME SERIES CACHES`. Used only when the [tags](#tags-table) table doesn't store `min_time` and `max_time`, see `tags_deduplication_cache_size_bytes`. Set to 0 to disable the cache |
+| `time_ranges_deduplication_cache_size_bytes` | UInt64 | 104857600 | Maximum size in bytes of the deduplication cache of the [time ranges](#time-ranges-table) table. The cache remembers the time range written recently for each time series, so the same time range rounded to buckets (see `time_ranges_bucket_seconds`) isn't written again with every insert. When the cache is full, the entries used only once are evicted first, then the least recently used ones (SLRU). The cache is used only when `time_ranges_bucket_seconds` is not zero, because otherwise almost every insert changes the time range. Set to 0 to disable the cache, see also `time_ranges_deduplication_cache_expiration_seconds` |
+| `time_ranges_deduplication_cache_expiration_seconds` | UInt64 | 3600 | Time after which an entry of the deduplication cache of the [time ranges](#time-ranges-table) table expires, counted from the moment the time range was written. So every time range is written again at least once per this period, which limits any difference between the cache and the table. The cache is local to the server and cleared by `TRUNCATE TABLE` executed on it or by `SYSTEM DROP TIME SERIES CACHES`. Used only when `time_ranges_bucket_seconds` is not zero. Set to 0 to disable the cache |
 | `samples_index_granularity` | UInt64 | 32768 | Sets `index_granularity` of the inner [samples](#samples-table) table. When set explicitly, it overrides `index_granularity` from the engine declaration. Ignored for a non-MergeTree engine |
 | `recent_samples_ttl_seconds` | UInt64 | 345600 | Retention of the additional `recent samples` target table, which every inserted sample is written to as well. An inner recent samples table always gets `TTL toDateTime(timestamp) + toIntervalSecond(recent_samples_ttl_seconds)` derived from this setting (overriding any TTL from the engine declaration). Queries whose time range fits in the TTL window prefer the recent samples table to the main samples table (see the query-level setting `time_series_prefer_recent_samples_table`). The default is 4 days; the effective value is pinned into the table definition at CREATE time. Set to 0 to disable the recent samples table |
 | `recent_samples_partition_by` | Expression | `toStartOfInterval(toDateTime(timestamp, 'UTC'), toIntervalHour(5))` | Partition key of the inner `recent samples` table, for example `toStartOfHour(timestamp)`. When set explicitly, it overrides the partition key from the engine declaration; if neither is set, one partition per 5 hours is used. Requires `recent_samples_ttl_seconds` to be non-zero |
