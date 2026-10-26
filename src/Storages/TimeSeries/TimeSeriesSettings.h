@@ -66,6 +66,9 @@ struct TimeSeriesSettings
     /// they are stored in that table but not aggregated.
     bool hasMinTimeAndMaxTimeInTagsSortingKey() const;
 
+    /// Returns the names of the tags stored in separate columns of the "tags" table, see the setting `tags_to_columns`.
+    Strings getTagsStoredInColumns() const;
+
 private:
     std::unique_ptr<TimeSeriesSettingsImpl> impl;
 };

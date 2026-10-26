@@ -18,6 +18,7 @@
 #include <Storages/StorageTimeSeries.h>
 #include <Storages/TimeSeries/PrometheusQueryToSQL/Converter.h>
 #include <Storages/TimeSeries/TimeSeriesColumnNames.h>
+#include <Storages/TimeSeries/TimeSeriesSettings.h>
 #include <Storages/TimeSeries/checkTimeSeriesVersion.h>
 #include <Storages/TimeSeries/getPromQLResultTimestampType.h>
 #include <Storages/TimeSeries/splitTimeSeriesType.h>
@@ -202,6 +203,7 @@ void StoragePrometheusQuery::readImpl(
     LOG_INFO(log, "Building SQL to evaluate promql: {}", *config.promql_query);
     auto evaluation_settings = config.evaluation_settings;
     evaluation_settings.push_down_label_matchers = context->getSettingsRef()[Setting::promql_push_down_label_matchers];
+    evaluation_settings.tags_stored_in_columns = time_series_storage->getStorageSettings()->getTagsStoredInColumns();
     PrometheusQueryToSQL::Converter converter{config.promql_query, evaluation_settings};
     ASTPtr select_query = converter.getSQL();
 

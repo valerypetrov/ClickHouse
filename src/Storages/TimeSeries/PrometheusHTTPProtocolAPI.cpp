@@ -209,6 +209,7 @@ void PrometheusHTTPProtocolAPI::executePromQLQuery(
     evaluation_settings.time_scale = getPromQLResultTimestampScale(evaluation_settings.table_timestamp_type);
     evaluation_settings.time_zone = getPromQLResultTimeZone(evaluation_settings.table_timestamp_type);
     evaluation_settings.push_down_label_matchers = getContext()->getSettingsRef()[Setting::promql_push_down_label_matchers];
+    evaluation_settings.tags_stored_in_columns = time_series_storage->getStorageSettings()->getTagsStoredInColumns();
     const UInt32 time_scale = evaluation_settings.time_scale;
 
     if (!params.lookback_delta_param.empty())

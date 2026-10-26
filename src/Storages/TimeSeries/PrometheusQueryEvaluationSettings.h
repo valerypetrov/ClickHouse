@@ -69,6 +69,10 @@ struct PrometheusQueryEvaluationSettings
 
     /// Copy label matchers across binary operators, see the setting `promql_push_down_label_matchers`.
     bool push_down_label_matchers = true;
+
+    /// The tags which the TimeSeries table stores in separate columns, see its setting `tags_to_columns`.
+    /// A selector reads them from those columns, which can be `Nullable`, so only the selector checks matchers on them.
+    Strings tags_stored_in_columns;
 };
 
 }

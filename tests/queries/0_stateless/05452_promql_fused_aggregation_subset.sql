@@ -11,6 +11,8 @@
 
 DROP TABLE IF EXISTS prometheus;
 DROP TABLE IF EXISTS prometheus_empty;
+DROP TABLE IF EXISTS prometheus_nullable;
+DROP TABLE IF EXISTS prometheus_nullable_empty;
 
 SET session_timezone = 'UTC';
 SET allow_experimental_time_series_table = 1;
@@ -275,6 +277,26 @@ SELECT 'grouping_label', a = b, a FROM
 );
 SET promql_push_down_label_matchers = 1;
 
+-- The tag `status` is stored in a `Nullable` column, where an absent tag is NULL: the selector compares the column,
+-- so `status!="200"` doesn't select the series of the job `batch`. The condition on the labels of a series would select it,
+-- so the sides are not fused.
+CREATE TABLE prometheus_nullable ENGINE = TimeSeries SETTINGS tags_to_columns = {'status': 'status'}
+TAGS INNER COLUMNS (status Nullable(String));
+INSERT INTO prometheus_nullable (metric_name, tags, samples) VALUES
+    ('req', map('job', 'api', 'instance', 'i1', 'status', '200'), [(toDateTime64(70, 3), 1), (toDateTime64(80, 3), 3), (toDateTime64(90, 3), 6), (toDateTime64(100, 3), 10), (toDateTime64(110, 3), 15), (toDateTime64(120, 3), 21), (toDateTime64(130, 3), 28)]),
+    ('req', map('job', 'api', 'instance', 'i1', 'status', '500'), [(toDateTime64(70, 3), 0), (toDateTime64(80, 3), 1), (toDateTime64(90, 3), 1), (toDateTime64(100, 3), 2), (toDateTime64(110, 3), 3), (toDateTime64(120, 3), 3), (toDateTime64(130, 3), 4)]),
+    ('req', map('job', 'batch', 'instance', 'i5'), [(toDateTime64(70, 3), 1), (toDateTime64(80, 3), 2), (toDateTime64(90, 3), 3), (toDateTime64(100, 3), 4), (toDateTime64(110, 3), 5), (toDateTime64(120, 3), 6), (toDateTime64(130, 3), 7)]);
+SELECT 'nullable_tag_column', a = b, a FROM
+(
+    SELECT
+        (SELECT groupArray((tags, arrayMap(s -> (toUInt32(s.1), round(s.2, 9)), samples))) FROM (SELECT * FROM prometheusQueryRange('prometheus_nullable',
+            'sum by (job) (rate(req{status!="200"}[30s])) / sum by (job) (rate(req[30s]))',
+            100, 130, 10) ORDER BY tags)) AS a,
+        (SELECT groupArray((tags, arrayMap(s -> (toUInt32(s.1), round(s.2, 9)), samples))) FROM (SELECT * FROM prometheusQueryRange('prometheus_nullable',
+            'label_replace(sum by (job) (rate(req{status!="200"}[30s])), "nx", "", "nx", "") / label_replace(sum by (job) (rate(req[30s])), "nx", "", "nx", "")',
+            100, 130, 10) ORDER BY tags)) AS b
+);
+
 SELECT '-- an instant query';
 SELECT tags, timestamp, round(value, 9) FROM prometheusQuery('prometheus', 'sum by (job) (rate(req{status="500"}[30s])) / sum by (job) (rate(req[30s]))', 120) ORDER BY tags;
 
@@ -286,6 +308,8 @@ SELECT * FROM prometheusQueryRange('prometheus', 'sum by (a) (rate({__name__=~"m
 -- EXPLAIN keeps the selector filters in the plan only for an empty table. Only the hash joins are counted: the PromQL operators
 -- are executed with a hash join, while each selector joins the time ranges table with a merge join.
 CREATE TABLE prometheus_empty ENGINE = TimeSeries;
+CREATE TABLE prometheus_nullable_empty ENGINE = TimeSeries SETTINGS tags_to_columns = {'status': 'status'}
+TAGS INNER COLUMNS (status Nullable(String));
 
 SELECT '-- the fused queries read one selector and make no join';
 SELECT 'eq', countIf(explain LIKE '%Filter column:%metric_name%'), countIf(explain LIKE '%Join (JOIN FillRightFirst)%')
@@ -314,5 +338,11 @@ SELECT 'grouping_label', countIf(explain LIKE '%Filter column:%metric_name%'), c
 FROM (EXPLAIN SELECT * FROM prometheusQueryRange('prometheus_empty', 'sum by (job) (rate(req{job="api"}[30s])) / sum by (job) (rate(req[30s]))', 100, 130, 10));
 SET promql_push_down_label_matchers = 1;
 
+SELECT '-- a matcher on a tag stored in a column is not checked on the series of the other side';
+SELECT 'nullable_tag_column', countIf(explain LIKE '%Filter column:%metric_name%'), countIf(explain LIKE '%Join (JOIN FillRightFirst)%')
+FROM (EXPLAIN SELECT * FROM prometheusQueryRange('prometheus_nullable_empty', 'sum by (job) (rate(req{status!="200"}[30s])) / sum by (job) (rate(req[30s]))', 100, 130, 10));
+
+DROP TABLE prometheus_nullable_empty;
+DROP TABLE prometheus_nullable;
 DROP TABLE prometheus_empty;
 DROP TABLE prometheus;

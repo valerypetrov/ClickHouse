@@ -18,6 +18,9 @@ struct ConverterContext
     const StorageID time_series_storage_id;
     UInt64 time_series_version = TimeSeriesVersion::LATEST;
 
+    /// The tags which the TimeSeries table stores in separate columns (see `PrometheusQueryEvaluationSettings`).
+    const Strings tags_stored_in_columns;
+
     /// Data type of the column `timestamp` returned by the query built by the converter.
     /// All timestamps and durations in the converter (see TimestampType and DurationType) use `result_timestamp_scale`.
     /// The samples read from the TimeSeries table keep the types of the table, see the comment for StoreMethod::RAW_DATA.

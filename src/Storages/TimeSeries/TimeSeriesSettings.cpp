@@ -149,6 +149,15 @@ bool TimeSeriesSettings::hasMinTimeAndMaxTimeInTagsSortingKey() const
     return hasMinTimeAndMaxTimeInTagsTable() && !(*this)[TimeSeriesSetting::aggregate_min_time_and_max_time];
 }
 
+Strings TimeSeriesSettings::getTagsStoredInColumns() const
+{
+    Strings res;
+    const Map & tags_to_columns = (*this)[TimeSeriesSetting::tags_to_columns];
+    for (const auto & entry : tags_to_columns)
+        res.push_back(entry.safeGet<Tuple>().at(0).safeGet<String>());
+    return res;
+}
+
 void checkTimeSeriesSettings(const TimeSeriesSettings & settings)
 {
     UInt64 version = settings[TimeSeriesSetting::version];

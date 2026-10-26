@@ -25,7 +25,8 @@ struct AggregationBinaryOperatorFusion
 
 /// Returns how to calculate both sides in one aggregation if both sides are one-argument aggregations with the same grouping
 /// of the same expression, e.g. `sum(x) - max(x)`, or of two expressions which differ only in that the selector of one of them
-/// has extra matchers on labels other than `__name__`, e.g. `sum(rate(m{status="500"}[5m])) / sum(rate(m[5m]))`.
+/// has extra matchers on labels other than `__name__` and the tags stored in separate columns (see `tags_to_columns`),
+/// e.g. `sum(rate(m{status="500"}[5m])) / sum(rate(m[5m]))`.
 /// Returns `std::nullopt` if the sides must be calculated separately.
 std::optional<AggregationBinaryOperatorFusion> tryFuseAggregationBinaryOperator(
     const PrometheusQueryTree::BinaryOperator * operator_node, const ConverterContext & context);

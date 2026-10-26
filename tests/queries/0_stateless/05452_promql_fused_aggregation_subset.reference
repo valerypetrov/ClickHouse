@@ -22,6 +22,7 @@ subquery	1	[([],[(100,1),(110,1),(120,1),(130,1)]),([('job','api')],[(100,0.0740
 quantile_over_time	1	[([],[(100,1),(110,1),(120,1),(130,1)]),([('job','api')],[(100,0.0625),(110,0.068965517),(120,0.057692308),(130,0.033333333)]),([('job','db')],[(100,0.210526316),(110,0.215686275),(120,0.21875)])]
 selector_text_repeated	1	[([],[(100,0.172131148),(110,0.221311475),(120,0.270491803),(130,0.3)])]
 grouping_label	1	[([('job','api')],[(100,1),(110,1),(120,1),(130,1)])]
+nullable_tag_column	1	[([('job','api')],[(100,0.130434783),(110,0.181818182),(120,0.083333333),(130,0.071428571)])]
 -- an instant query
 []	1970-01-01 00:02:00.000	1
 [('job','api')]	1970-01-01 00:02:00.000	0.017964072
@@ -39,3 +40,5 @@ extra_matchers_on_both_sides	2	1
 extra_metric_name_matcher	2	1
 -- without the pushdown, the sides differ in a matcher on a grouping label and are fused too
 grouping_label	1	0
+-- a matcher on a tag stored in a column is not checked on the series of the other side
+nullable_tag_column	2	1

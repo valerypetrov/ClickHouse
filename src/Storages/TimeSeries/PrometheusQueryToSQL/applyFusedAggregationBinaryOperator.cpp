@@ -267,9 +267,16 @@ std::optional<AggregationBinaryOperatorFusion> tryFuseAggregationBinaryOperator(
         return std::nullopt;
 
     /// The metric name can't be checked on the series of the argument: a function drops it.
-    auto is_metric_name_matcher = [](const Matcher & matcher) { return matcher.label_name == kMetricName; };
-    if (std::ranges::any_of(fusion.left_extra_matchers, is_metric_name_matcher)
-        || std::ranges::any_of(fusion.right_extra_matchers, is_metric_name_matcher))
+    /// A tag stored in a separate column (see `tags_to_columns`) isn't checked the same way as by the selector, which compares
+    /// the value of the column: it can be NULL instead of the empty string for an absent tag.
+    const auto & tags_stored_in_columns = context.tags_stored_in_columns;
+    auto cannot_check_matcher = [&](const Matcher & matcher)
+    {
+        return (matcher.label_name == kMetricName)
+            || (std::ranges::find(tags_stored_in_columns, matcher.label_name) != tags_stored_in_columns.end());
+    };
+    if (std::ranges::any_of(fusion.left_extra_matchers, cannot_check_matcher)
+        || std::ranges::any_of(fusion.right_extra_matchers, cannot_check_matcher))
         return std::nullopt;
 
     /// The side without extra matchers reads all the series both sides need.
