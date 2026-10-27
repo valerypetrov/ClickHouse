@@ -695,6 +695,9 @@ private:
             {"sort_desc", {ResultType::INSTANT_VECTOR}},
             {"histogram_count", {ResultType::INSTANT_VECTOR}},
             {"histogram_sum", {ResultType::INSTANT_VECTOR}},
+            {"histogram_avg", {ResultType::INSTANT_VECTOR}},
+            {"histogram_stddev", {ResultType::INSTANT_VECTOR}},
+            {"histogram_stdvar", {ResultType::INSTANT_VECTOR}},
             {"histogram_fraction", {ResultType::SCALAR, ResultType::SCALAR, ResultType::INSTANT_VECTOR}},
         };
 
