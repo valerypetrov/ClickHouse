@@ -135,10 +135,24 @@ namespace
     /// byte. Only the first error is ever reported and a parse with a recorded error always fails,
     /// so lexing the remainder is wasted work - a megabyte of NUL bytes used to keep a thread busy
     /// for minutes, uncancellable because parsing happens during query analysis.
+    /// It also lexes the Prometheus functions which the FUNCTION token of the grammar doesn't list as function names.
     class PromQLLexerBailingOutOnError : public antlr4_grammars::PromQLLexer
     {
     public:
         using antlr4_grammars::PromQLLexer::PromQLLexer;
+
+        std::unique_ptr<antlr4::Token> nextToken() override
+        {
+            auto next_token = PromQLLexer::nextToken();
+            /// The grammar accepts a FUNCTION token as a metric name too, so `histogram_avg{job="x"}` is still a selector.
+            if (next_token->getType() == METRIC_NAME)
+            {
+                const auto token_text = next_token->getText();
+                if (token_text == "histogram_avg" || token_text == "histogram_stddev" || token_text == "histogram_stdvar")
+                    static_cast<antlr4::WritableToken *>(next_token.get())->setType(FUNCTION);
+            }
+            return next_token;
+        }
 
         void recover(const antlr4::LexerNoViableAltException &) override
         {
