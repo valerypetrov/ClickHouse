@@ -3269,12 +3269,13 @@ size_t StorageMergeTree::markFinishedMutations(UInt64 first_just_completed_versi
                 continue;
             }
         }
-        else
+        else if (!entry.is_done)
         {
             /// A transactional mutation is finished once no part in its scope is left - the same
             /// rule `getMutationsStatus` and `waitForMutation` report. Stopping at the first such
             /// entry instead left it permanently unfinished here, so its counters were never
             /// decremented and no entry behind it was ever marked done either.
+            /// A done entry is not scanned again: its scope cannot grow back.
             if (!parts_for_visibility)
                 parts_for_visibility = getDataPartsVectorForInternalUsage();
 

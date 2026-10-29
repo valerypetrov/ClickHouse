@@ -9018,9 +9018,10 @@ std::vector<MergeTreeMutationStatus> StorageReplicatedMergeTree::getMutationsSta
     std::unordered_set<String> proven_without_older_inserts;
     {
         std::lock_guard initial_bytes_lock(mutation_initial_bytes_mutex);
+        /// Copied before the reader is registered, so a failed copy leaves no reader behind.
+        proven_without_older_inserts = mutations_without_older_inserts;
         reader_generation = mutation_initial_bytes_next_reader++;
         mutation_initial_bytes_readers.insert(reader_generation);
-        proven_without_older_inserts = mutations_without_older_inserts;
     }
     SCOPE_EXIT({
         std::lock_guard initial_bytes_lock(mutation_initial_bytes_mutex);
